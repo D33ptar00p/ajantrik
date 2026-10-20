@@ -274,3 +274,202 @@ def test_static_assets_public(studio):
     status, body, _headers = call(port, "GET", "/app.js")
     assert status == 200 and "Factory Studio" in body
     assert call(port, "GET", "/app.css")[0] == 200
+
+
+# ---- backlog ------------------------------------------------------------------------------------------
+HEADER = "# Backlog\n\n## Queue\n\n"
+
+
+def _backlog(repo: Path, *lines: str) -> Path:
+    path = repo / ".factory" / "backlog.md"
+    path.write_text(HEADER + "".join(ln + "\n" for ln in lines))
+    return path
+
+
+def _set_runtime(repo: Path, kind: str) -> None:
+    p = Project(repo)
+    data = p.raw()
+    data["runtime"] = {**(data.get("runtime") or {}), "kind": kind}
+    p.yaml_path.write_text(yaml.safe_dump(data, sort_keys=False))
+
+
+@pytest.fixture
+def spawned(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    """Record every detached command; the fake process outlives EARLY_EXIT like a running job."""
+    calls: list[list[str]] = []
+
+    def argv(args: list[str]) -> list[str]:
+        calls.append(args)
+        return [sys.executable, "-c", "import time; time.sleep(2)"]
+
+    monkeypatch.setattr(studio_server, "EARLY_EXIT", 0.2)
+    monkeypatch.setattr(studio_server, "_cli_argv", argv)
+    return calls
+
+
+def test_backlog_crud_over_http(studio):
+    port, token, repo = studio
+    path = repo / ".factory" / "backlog.md"
+    status, r, _ = call(port, "GET", "/api/backlog", token=token)
+    assert status == 200 and r["items"] == [] and r["headless"] is False
+
+    status, r, _ = call(port, "POST", "/api/backlog", token=token,
+                        body={"key": "GEN-9", "base": "main", "text": "Do it"})
+    assert status == 200 and [i["text"] for i in r["items"]] == ["Do it"]
+    assert "- [ ] GEN-9 · base: main · Do it\n" in path.read_text()
+
+    status, r, _ = call(port, "POST", "/api/backlog", token=token, body={"text": "Second"})
+    assert status == 200 and len(r["items"]) == 2
+
+    status, got, _ = call(port, "GET", "/api/backlog", token=token)
+    assert got["items"][0] == {"index": 0, "state": "queued", "key": "GEN-9", "base": "main", "text": "Do it",
+                               "line": "- [ ] GEN-9 · base: main · Do it"}
+
+    status, r, _ = call(port, "PUT", "/api/backlog/0", token=token,
+                        body={"line": "- [ ] GEN-9 · base: main · Do it", "key": "GEN-9", "base": "main",
+                              "text": "Do it better", "state": "blocked"})
+    assert status == 200 and r["items"][0]["state"] == "blocked"
+    assert "- [!] GEN-9 · base: main · Do it better\n" in path.read_text()
+    assert "- [ ] Second\n" in path.read_text()
+
+    status, r, _ = call(port, "DELETE", "/api/backlog/0", token=token,
+                        body={"line": "- [!] GEN-9 · base: main · Do it better"})
+    assert status == 200 and [i["text"] for i in r["items"]] == ["Second"]
+    assert "Do it better" not in path.read_text() and "- [ ] Second\n" in path.read_text()
+
+
+def test_backlog_is_served_per_project_too(studio):
+    port, token, repo = studio
+    default = call(port, "GET", "/api/workspace", token=token)[1]["default"]
+    _backlog(repo, "- [ ] one")
+    status, r, _ = call(port, "GET", f"/api/p/{default}/backlog", token=token)
+    assert status == 200 and [i["text"] for i in r["items"]] == ["one"]
+    status, r, _ = call(port, "POST", f"/api/p/{default}/backlog", token=token, body={"text": "two"})
+    assert status == 200 and len(r["items"]) == 2
+    assert "- [ ] two\n" in (repo / ".factory" / "backlog.md").read_text()
+
+
+def test_backlog_stale_line_is_a_conflict(studio):
+    port, token, repo = studio
+    path = _backlog(repo, "- [ ] one", "- [ ] two")
+    before = path.read_bytes()
+    status, r, _ = call(port, "PUT", "/api/backlog/0", token=token,
+                        body={"line": "- [ ] edited elsewhere", "text": "x", "state": "queued"})
+    assert status == 409 and "reload" in r["error"]
+    assert call(port, "PUT", "/api/backlog/5", token=token,
+                body={"line": "- [ ] one", "text": "x", "state": "queued"})[0] == 409
+    assert call(port, "DELETE", "/api/backlog/1", token=token, body={"line": "- [ ] one"})[0] == 409
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("body", [
+    {"text": ""}, {"text": "  "}, {"text": "a\nb"}, {"text": "a · b"},
+    {"text": "ok", "key": "bad key"}, {"text": "ok", "base": "a b"},
+    {"text": 5}, {"text": "ok", "key": 7}, {},
+])
+def test_backlog_post_rejects_bad_input(studio, body):
+    port, token, repo = studio
+    path = _backlog(repo, "- [ ] one")
+    before = path.read_bytes()
+    status, r, _ = call(port, "POST", "/api/backlog", token=token, body=body)
+    assert status == 400 and r["error"]
+    assert path.read_bytes() == before
+
+
+def test_backlog_put_and_delete_reject_bad_input(studio):
+    port, token, repo = studio
+    path = _backlog(repo, "- [ ] one", "- [x] two → 001-x")
+    before = path.read_bytes()
+    assert call(port, "PUT", "/api/backlog/abc", token=token,
+                body={"line": "- [ ] one", "text": "x", "state": "queued"})[0] == 400
+    assert call(port, "PUT", "/api/backlog/-1", token=token,
+                body={"line": "- [ ] one", "text": "x", "state": "queued"})[0] == 400
+    assert call(port, "PUT", "/api/backlog/0", token=token,
+                body={"line": "- [ ] one", "text": "", "state": "queued"})[0] == 400
+    assert call(port, "PUT", "/api/backlog/0", token=token,
+                body={"line": "- [ ] one", "text": "x", "state": "done"})[0] == 400
+    assert call(port, "PUT", "/api/backlog/1", token=token,
+                body={"line": "- [x] two → 001-x", "text": "x", "state": "queued"})[0] == 400  # done items
+    assert call(port, "DELETE", "/api/backlog/abc", token=token, body={"line": "- [ ] one"})[0] == 400
+    assert path.read_bytes() == before
+
+
+def test_backlog_writes_need_the_token_and_json(studio):
+    port, token, repo = studio
+    path = _backlog(repo, "- [ ] one")
+    before = path.read_bytes()
+    assert call(port, "GET", "/api/backlog")[0] == 401
+    assert call(port, "POST", "/api/backlog", body={"text": "x"})[0] in (401, 403)
+    assert call(port, "PUT", "/api/backlog/0", body={"line": "- [ ] one", "text": "x", "state": "queued"})[0] in (401, 403)
+    assert call(port, "DELETE", "/api/backlog/0", body={"line": "- [ ] one"})[0] in (401, 403)
+    assert call(port, "POST", "/api/backlog/run", body={"items": [{"index": 0, "line": "- [ ] one"}]})[0] in (401, 403)
+    assert call(port, "DELETE", "/api/backlog/0", token="wrong", body={"line": "- [ ] one"})[0] in (401, 403)
+    assert call(port, "POST", "/api/backlog", token=token, body={"text": "x"}, ctype="text/plain")[0] == 415
+    assert call(port, "DELETE", "/api/backlog/0", token=token, body={"line": "- [ ] one"}, ctype="text/plain")[0] == 415
+    assert call(port, "POST", "/api/backlog", token=token, body={"text": "x"}, host="evil.example:80")[0] == 421
+    assert path.read_bytes() == before
+
+
+def test_backlog_reports_headless_by_runtime(studio):
+    port, token, repo = studio
+    assert call(port, "GET", "/api/backlog", token=token)[1]["headless"] is False
+    for kind in ("claude-cli", "codex-cli", "api"):
+        _set_runtime(repo, kind)
+        assert call(port, "GET", "/api/backlog", token=token)[1]["headless"] is True
+    _set_runtime(repo, "claude-code")
+    assert call(port, "GET", "/api/backlog", token=token)[1]["headless"] is False
+
+
+def test_backlog_run_is_refused_in_the_interactive_runtime(studio, spawned):
+    port, token, repo = studio
+    path = _backlog(repo, "- [ ] one", "- [ ] two")
+    before = path.read_bytes()
+    status, r, _ = call(port, "POST", "/api/backlog/run", token=token,
+                        body={"items": [{"index": 0, "line": "- [ ] one"}]})
+    assert status == 409 and "claude-cli" in r["error"]
+    assert spawned == [] and path.read_bytes() == before
+
+
+def test_backlog_run_starts_one_next_with_the_chosen_items(studio, spawned):
+    port, token, repo = studio
+    _set_runtime(repo, "claude-cli")
+    path = _backlog(repo, "- [ ] one", "- [ ] two", "- [ ] three")
+    before = path.read_bytes()
+    status, r, _ = call(port, "POST", "/api/backlog/run", token=token,
+                        body={"items": [{"index": 2, "line": "- [ ] three"}, {"index": 0, "line": "- [ ] one"}]})
+    assert status == 200 and r["started"] and r["log"]
+    assert spawned == [["next", "--items", "0,2"]]
+    assert path.read_bytes() == before  # the CLI claims, not the studio
+
+
+@pytest.mark.parametrize("items, expected", [
+    ([], 400),
+    ([{"index": 0, "line": "- [ ] one"}, {"index": 0, "line": "- [ ] one"}], 400),
+    ([{"index": 3, "line": "- [x] done → 001-x"}], 400),
+    ([{"index": 2, "line": "- [!] stuck"}], 400),
+    ([{"index": 0, "line": "- [ ] one"}, {"index": 4, "line": "- [ ] GEN-1 · a"},
+      {"index": 5, "line": "- [ ] GEN-2 · b"}], 400),
+    ([{"index": 6, "line": "- [ ] base: a · x"}, {"index": 7, "line": "- [ ] base: b · y"}], 400),
+    ([{"index": 0, "line": "- [ ] stale"}], 409),
+    ([{"index": 99, "line": "- [ ] one"}], 409),
+    ([{"index": "0", "line": "- [ ] one"}], 400),
+    ([{"index": True, "line": "- [ ] two"}], 400),
+    ([{"index": 0}], 400),
+    ("0,1", 400),
+])
+def test_backlog_run_refuses_bad_selections(studio, spawned, items, expected):
+    port, token, repo = studio
+    _set_runtime(repo, "claude-cli")
+    _backlog(repo, "- [ ] one", "- [ ] two", "- [!] stuck", "- [x] done → 001-x", "- [ ] GEN-1 · a",
+             "- [ ] GEN-2 · b", "- [ ] base: a · x", "- [ ] base: b · y")
+    status, r, _ = call(port, "POST", "/api/backlog/run", token=token, body={"items": items})
+    assert status == expected and r["error"]
+    assert spawned == []
+
+
+def test_backlog_run_without_items_key_is_a_bad_request(studio, spawned):
+    port, token, repo = studio
+    _set_runtime(repo, "claude-cli")
+    _backlog(repo, "- [ ] one")
+    assert call(port, "POST", "/api/backlog/run", token=token, body={})[0] == 400
+    assert spawned == []

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 import sys
@@ -14,7 +15,7 @@ from pydantic import ValidationError
 
 from ajantrik.core.connections import tickets as tix
 from ajantrik.core.routing import refused, route_reviewers
-from ajantrik.core.util import glob_match
+from ajantrik.core.util import FactoryError, glob_match
 from ajantrik.kit.project import Project, list_presets
 from ajantrik.kit.render import render
 from ajantrik.kit.schema import FactoryConfig, warnings
@@ -265,6 +266,102 @@ def test_sync_and_next(git_repo, factory, monkeypatch):
     tix.mark_claimed(git_repo, item["line"], job["id"])
     assert f"→ {job['id']}" in (git_repo / ".factory" / "backlog.md").read_text()
     assert job["branch"] == "bugfix/GEN-2_Fix_crash" and job["ticket"] == "GEN-2"
+
+
+def _three_item_backlog(root: Path, *lines: str) -> Path:
+    path = root / ".factory" / "backlog.md"
+    path.write_text(tix.BACKLOG_HEADER + "".join(ln + "\n" for ln in lines))
+    return path
+
+
+def test_next_items_makes_one_job_from_several_items(git_repo, factory):
+    from ajantrik.core.engine import Engine
+
+    factory()
+    path = _three_item_backlog(git_repo, "- [ ] t0", "- [ ] t1", "- [ ] t2")
+    claim = tix.claim_items(git_repo, [0, 2])
+    job = Engine(git_repo).new_job(claim["request"], claim["key"], claim["base"])
+    for it in claim["items"]:
+        tix.mark_claimed(git_repo, it["claimed"], job["id"])
+    assert job["request"] == "t0; t2" and job["ticket"] is None
+    lines = path.read_text().splitlines()
+    assert f"- [x] t0 → {job['id']}" in lines and f"- [x] t2 → {job['id']}" in lines
+    assert "- [ ] t1" in lines and not any("→ claimed" in ln for ln in lines)
+
+
+def test_next_items_failed_job_creation_restores_both_lines(git_repo, factory):
+    from ajantrik.core.engine import Engine
+
+    factory()
+    path = _three_item_backlog(git_repo, "- [ ] t0", "- [ ] t1", "- [ ] t2")
+    before = path.read_bytes()
+    claim = tix.claim_items(git_repo, [0, 2])
+    assert path.read_bytes() != before
+    with pytest.raises(FactoryError):
+        Engine(git_repo).new_job(claim["request"], claim["key"], "no-such-branch")
+    tix.release_items(git_repo, claim["items"])
+    assert path.read_bytes() == before
+
+
+def test_next_items_uses_the_single_key_and_base_of_the_items(git_repo, factory):
+    from ajantrik.core.engine import Engine
+
+    factory()
+    _three_item_backlog(git_repo, "- [ ] GEN-4 · base: main · a", "- [ ] b", "- [ ] GEN-4 · c")
+    claim = tix.claim_items(git_repo, [0, 2])
+    job = Engine(git_repo).new_job(claim["request"], claim["key"], claim["base"])
+    assert job["ticket"] == "GEN-4" and job["base"] == "main" and job["request"] == "a; c"
+
+
+def test_next_items_cli_flag_rejects_non_numbers():
+    from ajantrik.kit.cli import _indices, build_parser
+
+    assert _indices("0,2") == [0, 2] and _indices("3") == [3]
+    for bad in ("x", "1,x", "-1", "", "1,,2"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            _indices(bad)
+    assert build_parser().parse_args(["next", "--items", "0,2"]).items == [0, 2]
+    assert build_parser().parse_args(["next"]).items is None
+    with pytest.raises(SystemExit) as e:
+        build_parser().parse_args(["next", "--items", "x"])
+    assert e.value.code != 0
+
+
+def test_next_items_cli_claims_creates_and_drives_one_job(git_repo, factory, monkeypatch):
+    from ajantrik.editions.headless.runner import Runner
+    from ajantrik.kit.cli import main
+
+    factory()
+    path = _three_item_backlog(git_repo, "- [ ] t0", "- [ ] t1", "- [ ] t2")
+    driven: list[str] = []
+
+    async def fake_drive(self, job_id):
+        driven.append(job_id)
+        return {"id": job_id}
+
+    monkeypatch.setattr(Runner, "drive", fake_drive)
+    assert main(["--root", str(git_repo), "next", "--items", "0,2"]) == 0
+    assert len(driven) == 1
+    lines = path.read_text().splitlines()
+    assert f"- [x] t0 → {driven[0]}" in lines and f"- [x] t2 → {driven[0]}" in lines and "- [ ] t1" in lines
+
+
+def test_next_items_cli_failure_exits_non_zero_and_restores_the_file(git_repo, factory, monkeypatch):
+    from ajantrik.editions.headless.runner import Runner
+    from ajantrik.kit.cli import main
+
+    factory()
+    path = _three_item_backlog(git_repo, "- [ ] base: no-such-branch · t0", "- [ ] t1", "- [x] t2 → 001-x")
+    before = path.read_bytes()
+
+    async def fake_drive(self, job_id):
+        raise AssertionError("must not run")
+
+    monkeypatch.setattr(Runner, "drive", fake_drive)
+    assert main(["--root", str(git_repo), "next", "--items", "0"]) == 1  # job creation fails: bad base
+    assert path.read_bytes() == before
+    assert main(["--root", str(git_repo), "next", "--items", "0,2"]) == 1  # a done item is refused
+    assert path.read_bytes() == before
 
 
 # ---- loop graph ---------------------------------------------------------------------------------------
