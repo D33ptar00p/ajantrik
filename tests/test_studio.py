@@ -12,6 +12,7 @@ import pytest
 import yaml
 
 from ajantrik.kit.project import Project, presets_dir
+from ajantrik.kit.render import TEMPLATES
 from ajantrik.studio import server as studio_server
 
 MINIMAL = {
@@ -243,6 +244,12 @@ def test_jobs_list_and_actions(studio):
     assert call(port, "POST", "/api/jobs/002-thing/approve", token=token, body={"stage": "x y"})[0] == 400
     assert call(port, "POST", "/api/jobs", token=token, body={"request": "", "ticket": ""})[0] == 400
     assert call(port, "POST", "/api/jobs", token=token, body={"request": "x", "ticket": "not a key"})[0] == 400
+    # A cookie alone can't start or deliver a job: the header token is required.
+    _, _, headers = call(port, "GET", f"/?token={token}")
+    jar = headers["Set-Cookie"].split(";")[0]
+    assert call(port, "POST", "/api/jobs/002-thing/go", cookie=jar, body={})[0] == 403
+    assert call(port, "POST", "/api/jobs/002-thing/deliver", cookie=jar, body={})[0] == 403
+    assert call(port, "POST", "/api/jobs/002-thing/approve", cookie=jar, body={"stage": "approval"})[0] == 403
 
 
 def test_job_start_reports_an_early_failure(studio):
@@ -473,3 +480,56 @@ def test_backlog_run_without_items_key_is_a_bad_request(studio, spawned):
     _backlog(repo, "- [ ] one")
     assert call(port, "POST", "/api/backlog/run", token=token, body={})[0] == 400
     assert spawned == []
+
+
+# ---- board actions carried out by the studio page ----------------------------------------------------------
+DASHBOARD = TEMPLATES / "factory" / "dashboard.html"
+REPO_DASHBOARD = Path(__file__).resolve().parents[1] / ".factory" / "dashboard.html"
+
+
+def test_board_actions_go_through_the_studio(studio):
+    html = DASHBOARD.read_text()
+    assert "window.parent.postMessage(" in html
+    assert "'factory-board-action'" in html
+    port, _, _ = studio
+    status, js, _ = call(port, "GET", "/app.js")
+    assert status == 200
+    assert "addEventListener('message'" in js
+    assert "event.origin === location.origin" in js
+    assert "$('board-frame').contentWindow" in js
+
+
+def test_studio_only_accepts_known_board_actions(studio):
+    port, _, _ = studio
+    _, js, _ = call(port, "GET", "/app.js")
+    assert "const BOARD_ACTIONS = {" in js
+    assert "'factory-board-action'" in js
+    assert "'factory-board-result'" in js
+    assert "Object.hasOwn(BOARD_ACTIONS" in js
+    assert "[0-9]{3}-[A-Za-z0-9_-]+" in js  # the job id check
+    assert "X-Factory-Token" in js  # actions go through api(), which sends the token
+
+
+def test_board_buttons_are_gated_and_survive_a_refresh():
+    html = DASHBOARD.read_text()
+    assert "EMBEDDED" in html and "PENDING" in html
+    assert "data-act" in html
+    assert "'factory-board-result'" in html
+    assert "e.source === window.parent" in html
+    assert "e.origin === location.origin" in html
+    # The board never talks to the API itself and never holds the token.
+    assert "X-Factory-Token" not in html
+    assert "factory-token" not in html
+
+
+def test_board_has_no_token(studio):
+    port, token, repo = studio
+    (repo / ".factory" / "dashboard.html").write_text(DASHBOARD.read_text())
+    status, body, _ = call(port, "GET", "/board/dashboard.html", token=token)
+    assert status == 200 and "factory-dashboard" in body
+    assert token not in body
+    assert call(port, "POST", "/board/dashboard.html", token=token, body={})[0] == 405
+
+
+def test_rendered_board_matches_the_template():
+    assert REPO_DASHBOARD.read_text() == DASHBOARD.read_text()
