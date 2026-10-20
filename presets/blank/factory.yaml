@@ -1,0 +1,95 @@
+# A minimal factory. Agents and skills come from the library on `factory init`; edit them in
+# .factory/config/agents and .factory/config/skills, or in the studio.
+version: 1
+repo:
+  name: my-repo
+  default_base: main
+  worktree_root: ../{repo}-factory
+  context_files:
+  - CLAUDE.md
+  - AGENTS.md
+runtime:
+  kind: claude-code
+  default_model: sonnet
+loop:
+  max_rounds: 3
+  stages:
+  - id: spec
+    kind: agent
+    title: Spec
+    agent: spec-writer
+    output: spec.md
+    rerun_on_rework: scope
+  - id: design
+    kind: agent
+    title: Design
+    agent: architect
+    output: design.md
+    read_builders: true
+    rerun_on_rework: always
+  - id: approval
+    kind: approval
+    title: Approve
+    note: approve the spec and design
+  - id: tests
+    kind: agent
+    title: Tests
+    agent: test-author
+    output: tests.md
+  - id: build
+    kind: builders
+    title: Build
+  - id: gate
+    kind: gate
+    title: Gate
+  - id: review
+    kind: reviewers
+    title: Review
+  - id: integrate
+    kind: integrate
+    title: Integrate
+    agent: integrator
+  - id: deliver
+    kind: delivery
+    title: Deliver
+builders:
+- id: main
+  description: the whole repository
+reviewers:
+  always:
+  - id: code
+  - id: security
+    chip: sec
+  routed: []
+gate:
+  timeout_min: 20
+  setup: []
+  # Add one step per check, e.g.
+  #   - key: tests
+  #     chip: test
+  #     cmd: python -m pytest -q --junitxml="$OUT/junit.xml"
+  #     junit: junit.xml
+  #   - key: lint
+  #     cmd: ruff check $(git diff --name-only --diff-filter=ACMR "$MERGE_BASE" HEAD -- '*.py')
+  steps: []
+  secrets: true
+  clean_tree: true
+preflight: []
+worktree: []
+conventions:
+  branch: '{type}/{key}_{words}'
+  branch_no_ticket: '{type}/{num}_{words}'
+  branch_types:
+    Bug: bugfix
+    default: feature
+  commit: '<type>: <what>'
+connections:
+  git:
+    provider: github
+    remote: origin
+  tickets:
+    provider: none
+    write_back: none
+delivery:
+  mode: none
+  require_approval: true

@@ -1,0 +1,279 @@
+version: 1
+repo:
+  name: omnigrid
+  title: OmniGrid Software Factory
+  default_base: main
+  worktree_root: ../{repo}-factory
+  context_files:
+  - CLAUDE.md
+runtime:
+  kind: claude-code
+  default_model: sonnet
+loop:
+  max_rounds: 3
+  stages:
+  - id: spec
+    kind: agent
+    title: Spec
+    agent: spec-writer
+    output: spec.md
+    rerun_on_rework: scope
+  - id: design
+    kind: agent
+    title: Design
+    agent: architect
+    output: design.md
+    read_builders: true
+    rerun_on_rework: always
+  - id: approval
+    kind: approval
+    title: Approve
+    note: approve the spec, design and mockup shots
+  - id: tests
+    kind: agent
+    title: Tests
+    agent: test-author
+    output: tests.md
+  - id: build
+    kind: builders
+    title: Build
+  - id: gate
+    kind: gate
+    title: Gate
+  - id: review
+    kind: reviewers
+    title: Review
+  - id: integrate
+    kind: integrate
+    title: Integrate
+    agent: integrator
+  - id: deliver
+    kind: delivery
+    title: Deliver
+builders:
+- id: pipeline
+  agent: builder-pipeline
+  description: Python data pipeline (sources, schema, normalise, data/dist outputs), tests and DATA_SOURCES.md
+  area_globs:
+  - pipeline/
+  - tests/
+  - DATA_SOURCES.md
+- id: web
+  agent: builder-web
+  description: web app (vanilla TypeScript on Vite with MapLibre GL, panels, legend, styles)
+  area_globs:
+  - web/src/
+  - web/index.html
+reviewers:
+  always:
+  - id: code
+  - id: security
+    chip: sec
+  routed:
+  - id: provenance
+    chip: prov
+    builder: pipeline
+    path_globs:
+    - pipeline/sources/
+    - pipeline/provenance.py
+    - pipeline/schema.py
+    - pipeline/manifest.py
+    - pipeline/gb.py
+    - pipeline/normalize.py
+    - DATA_SOURCES.md
+    - DATA_LICENCES.md
+    - LICENSE
+    - web/src/lib/provenance.ts
+    - web/src/panels/about.ts
+    diff_patterns:
+    - (?i)licen|attribution|cited|kind\.|modelled|estimate|impute|registry
+  - id: deploy
+    chip: dep
+    builder: web
+    path_globs:
+    - deploy.sh
+    - web/vite.config.ts
+    - web/package.json
+    - web/package-lock.json
+    - web/tsconfig.json
+    - pyproject.toml
+    - web/index.html
+    - web/src/lib/paths.ts
+    - .github/
+    diff_patterns:
+    - fetch\(|dataUrl|BASE_URL|import\.meta\.env
+    - https://
+    metrics:
+    - key: data_mb_delta
+      gt: 1.0
+  - id: ui
+    builder: web
+    path_globs:
+    - web/src/
+    - web/index.html
+  - id: ux
+    builder: web
+    path_globs:
+    - web/src/
+    - web/index.html
+gate:
+  timeout_min: 20
+  setup:
+  - test: test -x "$REPO/.venv/bin/python"
+    error: no venv at $REPO/.venv; run uv venv && uv pip install -e ".[geo,dev]"
+  - test: test -d web/node_modules
+    error: web/node_modules missing in the worktree; link the main checkout's web/node_modules
+  - test: test -f data/dist/manifest.json
+    error: data/dist missing in the worktree; copy the main checkout's data/dist
+  steps:
+  - key: lint
+    chip: lint
+    cmd: |
+      # The repo carries existing ruff findings; the ratchet fails only when a rule's count goes up.
+      export PYTHONPATH="$WORKTREE${PYTHONPATH:+:$PYTHONPATH}"
+      mapfile -t FILES < <(git diff --name-only --diff-filter=ACMR "$MERGE_BASE" HEAD -- '*.py')
+      if [[ ${#FILES[@]} -eq 0 ]]; then echo "lint: no changed .py files"; exit 0; fi
+      "$REPO/.venv/bin/python" "$FACTORY_DIR/harness/lint_ratchet.py" "$REPO/.venv/bin/ruff" "$MERGE_BASE" "${FILES[@]}"
+    builder: pipeline
+  - key: tests
+    chip: test
+    cmd: |
+      # The shared venv has the main checkout installed in editable mode; the worktree must win.
+      export PYTHONPATH="$WORKTREE${PYTHONPATH:+:$PYTHONPATH}"
+      COV=()
+      if "$REPO/.venv/bin/python" -c "import pytest_cov" 2>/dev/null; then
+        COV=(--cov=pipeline --cov-report="xml:$OUT/coverage.xml" --cov-report=term)
+      fi
+      "$REPO/.venv/bin/python" -m pytest -p no:cacheprovider --junitxml="$OUT/junit.xml" "${COV[@]}"
+    junit: junit.xml
+    coverage:
+      cobertura: coverage.xml
+    builder: pipeline
+  - key: pipeline
+    chip: pipe
+    when_changed:
+    - pipeline/
+    cmd: |
+      # data/raw and data/interim are links to the shared download cache; data/dist is the job's own copy.
+      export PYTHONPATH="$WORKTREE${PYTHONPATH:+:$PYTHONPATH}"
+      "$REPO/.venv/bin/python" -m pipeline.normalize
+    builder: pipeline
+  - key: data
+    chip: data
+    cmd: bash "$FACTORY_DIR/harness/data-step.sh"
+    metrics_file: data-metrics.json
+    builder: pipeline
+  - key: typecheck
+    chip: tsc
+    cmd: cd web && npx --no-install tsc --noEmit
+    builder: web
+  - key: build
+    chip: build
+    cmd: |
+      # Build with the GitHub Pages base, so a data path that ignores dataUrl() breaks here, not in prod.
+      rm -rf "$OUT/dist"
+      (cd web && OMNIGRID_BASE=/omnigrid/ npx --no-install vite build --outDir "$OUT/dist" --emptyOutDir) || exit 1
+      printf '{"app_kb": %s}\n' "$(du -sk --exclude=data "$OUT/dist" | cut -f1)" >"$OUT/build-metrics.json"
+      # The build copies the data payload into dist/; keep the app, drop the copy.
+      rm -rf "$OUT/dist/data"
+    metrics_file: build-metrics.json
+    builder: web
+  - key: e2e
+    chip: smoke
+    requires:
+    - build
+    external_failure: needs-human
+    cmd: |
+      # with-app.sh takes the port lock itself, so this step does not set lock.
+      test -d "$FACTORY_DIR/harness/node_modules/playwright-core" || { echo "harness not installed: npm ci --prefix .factory/harness"; exit 1; }
+      mkdir -p "$OUT/e2e"
+      sed "s#__OUT__#$OUT/e2e#" "$FACTORY_DIR/harness/smoke.json" >"$OUT/e2e/smoke.json"
+      OMNIGRID_BASE=/omnigrid/ WITH_APP_SERVER_LOG="$OUT/e2e/preview.log" \
+        "$FACTORY_DIR/harness/with-app.sh" "$WORKTREE" --preview "$OUT/dist" -- \
+        node "$FACTORY_DIR/harness/shoot.mjs" --strict "$OUT/e2e/smoke.json"
+    builder: web
+  secrets: true
+  clean_tree: true
+preflight:
+- cmd: git show "$BASE:.factory/config/factory.yaml" >/dev/null
+  hint: The factory must be committed on the base, so job worktrees carry its .gitignore rules (otherwise the gate's
+    clean-tree check fails on the worktree's links).
+- cmd: .venv/bin/python -c "import polars, h3, yaml, pipeline"
+  hint: 'Create the venv once: uv venv && uv pip install -e ".[geo,dev]"'
+- cmd: test -x web/node_modules/.bin/vite
+  hint: Run `npm ci --prefix web` once.
+- cmd: test -f data/dist/manifest.json
+  hint: Run `.venv/bin/python -m pipeline.normalize` once.
+- cmd: node -e 'process.exit(Number(process.versions.node.split(".")[0])>=20?0:1)'
+  hint: Node v20 or later is required.
+- cmd: command -v "${FACTORY_CHROME:-google-chrome}"
+  hint: Install Google Chrome or set FACTORY_CHROME (the harness uses the system browser).
+- cmd: test -d .factory/harness/node_modules/playwright-core
+  hint: Run `npm ci --prefix .factory/harness` once.
+worktree:
+- kind: symlink
+  path: web/node_modules
+- kind: symlink
+  path: data/raw
+- kind: symlink
+  path: data/interim
+- kind: copy
+  path: data/dist
+conventions:
+  branch: '{type}/{key}_{words}'
+  branch_no_ticket: '{type}/{num}_{words}'
+  branch_types:
+    Bug: fix
+    default: feature
+  commit: Plain English, imperative mood, e.g. "Escape plant names in tooltips"
+  pr_template: null
+connections:
+  git:
+    provider: github
+    remote: origin
+  tickets:
+    provider: none
+    write_back: none
+delivery:
+  mode: none
+  require_approval: true
+security:
+  refuse_paths:
+  - .claude/
+  - .factory/
+  - .github/
+  - deploy.sh
+  - pyproject.toml
+  - web/package.json
+  - web/package-lock.json
+  - LICENSE
+  - DATA_LICENCES.md
+  outgoing_files:
+  - pr.md
+  - pr-title.txt
+  - decision.md
+  guard:
+    env_reader_scripts: gate.sh and with-app.sh
+    local_url_example: http://127.0.0.1:5199/
+    external_services: every external service
+ui:
+  port: 8000
+  build_label: pipeline ∥ web
+  job_files:
+  - spec.md
+  - design.md
+  - shots/
+  - tests.md
+  - build-pipeline.md
+  - build-web.md
+  - decision.md
+  - pr-title.txt
+  - pr.md
+  skip_dirs:
+  - ui-scratch
+  - ux-scratch
+  - provenance-scratch
+  - mockup
+  - build-web
+  - dist
+  - e2e

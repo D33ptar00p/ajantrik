@@ -1,0 +1,5 @@
+# Reviewed secret-scan false positives, one fingerprint per line (from secrets.json or the
+# guard's block message), with a comment saying what it is and who reviewed it. Humans only:
+# the factory's guards block every agent from editing this file.
+#
+# 0123456789abcdef  # example: test JWT fixture in src/utils/__test__/test-utils.tsx (reviewed by <name>, 2026-10-14)

@@ -1,0 +1,1048 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="factory-dashboard" content="1">
+<title>Software Factory</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1' y='3' width='4' height='10' rx='1' fill='%238be9fd'/%3E%3Crect x='6' y='3' width='4' height='7' rx='1' fill='%23bd93f9'/%3E%3Crect x='11' y='3' width='4' height='4' rx='1' fill='%23ff79c6'/%3E%3C/svg%3E">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --card: #ffffff;
+    --card-hover: #f0f2f6;
+    --line: #dfe2e8;
+    --text: #1b1d24;
+    --muted: #5d6475;
+    --faint: #959bab;
+    --active: #0b7fab;
+    --pass: #1a8a4a;
+    --changes: #b35c00;
+    --fail: #c62f3c;
+    --human: #b0247a;
+    --ready: #6a3fc7;
+    --code-bg: #f0f2f6;
+    --scrim: rgba(20, 22, 30, .35);
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14151b;
+      --panel: #1a1c24;
+      --card: #20222c;
+      --card-hover: #262938;
+      --line: #2e3140;
+      --text: #e4e5ea;
+      --muted: #8d92a6;
+      --faint: #5e6378;
+      --active: #8be9fd;
+      --pass: #50fa7b;
+      --changes: #ffb86c;
+      --fail: #ff6e6e;
+      --human: #ff79c6;
+      --ready: #bd93f9;
+      --code-bg: #14151b;
+      --scrim: rgba(5, 6, 10, .6);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    /* clip, not hidden: hidden still lets focus scroll the page toward the off-screen drawer */
+    display: flex; flex-direction: column; overflow: clip;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  button { font: inherit; color: inherit; }
+
+  /* Header */
+  header {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px 20px;
+    flex-wrap: wrap; padding: 24px 24px 8px;
+  }
+  h1 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
+  h1 small { font-weight: 400; color: var(--muted); font-size: 13px; margin-left: 8px; }
+  .meta { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .meta b { color: var(--text); font-weight: 600; }
+  .meta .waiting b { color: var(--human); }
+  .status .dot {
+    display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--pass); margin-right: 6px; vertical-align: 1px;
+  }
+  .status.error { color: var(--fail); }
+  .status.error .dot { background: var(--fail); }
+  .banner {
+    margin: 12px 24px 0; padding: 10px 14px; border: 1px solid var(--fail);
+    border-radius: 8px; color: var(--fail); font-family: var(--mono); font-size: 12px;
+  }
+
+  /* Backlog strip */
+  .backlog { margin: 8px 24px 0; font-size: 12px; }
+  .backlog summary { cursor: pointer; color: var(--muted); font-family: var(--mono); width: fit-content; }
+  .backlog summary:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; border-radius: 4px; }
+  .backlog ul { list-style: none; padding: 8px 0 0; margin: 0; display: grid; gap: 4px; }
+  .backlog li { font-family: var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+  .backlog li.blocked { color: var(--changes); }
+  .backlog li .k { color: var(--text); }
+
+  /* Board: fills the window; every column fits the width and scrolls on its own, without scrollbars */
+  header, .banner, .backlog, footer { flex: none; }
+  .board-wrap { flex: 1; min-height: 0; overflow: hidden; padding: 16px 24px 12px; }
+  .board {
+    display: grid; grid-template-columns: repeat(var(--cols, 9), minmax(0, 1fr)); gap: 10px;
+    align-items: stretch; height: 100%;
+  }
+  .col { min-width: 0; min-height: 0; overflow-y: auto; scrollbar-width: none; }
+  .col::-webkit-scrollbar { display: none; }
+  .col-head {
+    position: sticky; top: 0; background: var(--bg); z-index: 1; min-width: 0;
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 8px; padding: 0 2px 8px;
+    border-bottom: 1px solid var(--line); margin-bottom: 12px;
+  }
+  .col-head h3 { margin: 0; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+  .col-head .who { order: 3; flex-basis: 100%; font-size: 11px; color: var(--faint); font-family: var(--mono);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .col-head .count { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .col.you .col-head { border-bottom-color: var(--human); }
+  .col.you h3 { color: var(--human); }
+  .col.ready-col .col-head { border-bottom-color: var(--ready); }
+  .col.ready-col h3 { color: var(--ready); }
+  .empty { color: var(--faint); font-size: 12px; padding: 4px 2px; }
+
+  /* Cards */
+  .card {
+    display: block; cursor: pointer; background: var(--card); border: 1px solid var(--line);
+    border-radius: 10px; padding: 10px 10px 9px; margin-bottom: 10px;
+    transition: background .15s, border-color .15s, transform .15s;
+  }
+  .card:hover { background: var(--card-hover); transform: translateY(-1px); }
+  .card:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
+  .card.live { border-color: color-mix(in srgb, var(--active) 45%, var(--line)); }
+  .card.you {
+    border-color: var(--human);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--human) 35%, transparent),
+                0 8px 24px -14px color-mix(in srgb, var(--human) 70%, transparent);
+  }
+  .card.ready { border-color: color-mix(in srgb, var(--ready) 60%, var(--line)); }
+  .card-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; min-width: 0; }
+  .num { font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .jira {
+    font-family: var(--mono); font-size: 11px; color: var(--active); text-decoration: none;
+    border: 1px solid color-mix(in srgb, var(--active) 40%, transparent); border-radius: 4px; padding: 0 5px;
+  }
+  .jira:hover { text-decoration: underline; }
+  .age { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--faint); white-space: nowrap; }
+  .pulse {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--active); flex: none;
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  .feature { font-size: 13px; line-height: 1.4; margin: 0 0 6px; overflow-wrap: anywhere; }
+  .branch {
+    font-family: var(--mono); font-size: 11px; color: var(--faint);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .agent { font-family: var(--mono); font-size: 11px; color: var(--active); margin-top: 6px; overflow-wrap: anywhere; }
+  .note { font-size: 12px; color: var(--muted); margin-top: 6px; overflow-wrap: anywhere; }
+  .card.you .note { color: var(--human); }
+
+  .rounds { margin-top: 10px; display: grid; gap: 4px; }
+  .round { display: flex; flex-wrap: wrap; gap: 3px; align-items: center; }
+  .round .r { font-family: var(--mono); font-size: 10px; color: var(--faint); width: 20px; }
+  .round .sep { width: 1px; height: 14px; background: var(--line); margin: 0 2px; }
+  .chip {
+    font-family: var(--mono); font-size: 10px; line-height: 1.6; padding: 0 5px;
+    border-radius: 4px; border: 1px dashed var(--faint); color: var(--faint); white-space: nowrap;
+  }
+  .chip.wait { animation: breathe 1.6s ease-in-out infinite; }
+  .chip.PASS { border: 1px solid transparent; color: var(--pass); background: color-mix(in srgb, var(--pass) 14%, transparent); }
+  .chip.CHANGES { border: 1px solid transparent; color: var(--changes); background: color-mix(in srgb, var(--changes) 16%, transparent); }
+  .chip.FAIL { border: 1px solid transparent; color: var(--fail); background: color-mix(in srgb, var(--fail) 16%, transparent); }
+  .chip.skip { border: 1px solid transparent; opacity: .45; text-decoration: line-through; }
+  .chip.bad { border: 1px solid var(--fail); color: var(--fail); }
+
+  .actions { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 5px; }
+  .copy.act { font-size: 11px; padding: 3px 8px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .copy.act.primary { color: var(--text); border-color: var(--muted); }
+  .card.you .copy.act.primary { border-color: var(--human); color: var(--human); }
+  .card.ready .copy.act.primary { border-color: var(--ready); color: var(--ready); }
+  .copy {
+    flex: none; cursor: pointer; font-size: 10.5px; font-family: var(--mono);
+    background: none; border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; color: var(--muted);
+  }
+  .copy:hover { color: var(--text); border-color: var(--muted); }
+  .copy:focus-visible { outline: 2px solid var(--active); outline-offset: 1px; }
+  .copy.done { color: var(--pass); border-color: var(--pass); }
+
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+  @keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: .4; } }
+  @media (prefers-reduced-motion: reduce) { .pulse, .chip.wait { animation: none; } .card { transition: none; } }
+
+  /* Drawer */
+  /* Above everything on the board, including the sticky column headers. */
+  .scrim { position: fixed; inset: 0; z-index: 40; background: var(--scrim); opacity: 0; pointer-events: none; transition: opacity .2s; }
+  .drawer {
+    position: fixed; top: 0; right: 0; bottom: 0; z-index: 41; width: min(var(--drawer-w, 980px), 100vw);
+    background: var(--panel); border-left: 1px solid var(--line);
+    display: grid; grid-template-rows: auto 1fr; transform: translateX(100%);
+    transition: transform .25s ease; visibility: hidden;
+  }
+  .open .scrim { opacity: 1; pointer-events: auto; }
+  .open .drawer { transform: none; visibility: visible; }
+  /* Drag the drawer's left edge to resize it; the width is remembered per browser. */
+  .resize {
+    position: absolute; top: 0; bottom: 0; left: -4px; width: 8px; z-index: 1;
+    cursor: col-resize; touch-action: none;
+  }
+  .resize::after {
+    content: ''; position: absolute; top: 0; bottom: 0; left: 3px; width: 2px;
+    background: transparent; transition: background .15s;
+  }
+  .resize:hover::after, .resize:focus-visible::after, .resizing .resize::after { background: var(--active); }
+  .resize:focus-visible { outline: none; }
+  .resizing { cursor: col-resize; user-select: none; }
+  .resizing .drawer { transition: none; }
+  .resizing iframe, .resizing img { pointer-events: none; }
+  .d-head { padding: 20px 24px 14px; border-bottom: 1px solid var(--line); position: relative; }
+  .d-head h3 { margin: 4px 44px 6px 0; font-size: 16px; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
+  .close {
+    position: absolute; top: 16px; right: 16px; width: 32px; height: 32px;
+    border-radius: 8px; border: 1px solid var(--line); background: none; cursor: pointer;
+    color: var(--muted); font-size: 18px; line-height: 1;
+  }
+  .close:hover { color: var(--text); border-color: var(--muted); }
+  .d-body { display: grid; grid-template-columns: 210px 1fr; min-height: 0; }
+  .files { border-right: 1px solid var(--line); padding: 14px 10px; overflow-y: auto; }
+  .files .group { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); margin: 14px 8px 4px; }
+  .files .group:first-child { margin-top: 0; }
+  .file {
+    display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+    background: none; border: 0; border-radius: 6px; padding: 5px 8px; cursor: pointer;
+    font-family: var(--mono); font-size: 12px; color: var(--muted);
+  }
+  .file:hover { background: var(--card-hover); color: var(--text); }
+  .file.on { background: var(--card-hover); color: var(--text); }
+  .file:focus-visible { outline: 2px solid var(--active); outline-offset: -2px; }
+  .file .rn { display: none; }
+  .file .v { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); flex: none; }
+  .v.good { background: var(--pass); } .v.warn { background: var(--changes); } .v.stop { background: var(--fail); }
+  .doc { overflow-y: auto; padding: 22px 28px 60px; min-width: 0; }
+
+  /* Rendered content */
+  .md { max-width: 720px; line-height: 1.65; overflow-wrap: anywhere; }
+  .md h1, .md h2, .md h3, .md h4 { line-height: 1.3; margin: 1.6em 0 .5em; }
+  .md h1 { font-size: 20px; } .md h2 { font-size: 15px; } .md h3 { font-size: 14px; color: var(--muted); }
+  .md > :first-child { margin-top: 0; }
+  .md p, .md ul, .md ol, .md blockquote, .md pre, .md table { margin: 0 0 .9em; }
+  .md ul, .md ol { padding-left: 1.3em; }
+  .md li { margin: .2em 0; }
+  .md li.task { list-style: none; margin-left: -1.3em; }
+  .md li.task::before { content: "☐"; margin-right: .5em; color: var(--faint); }
+  .md li.task.done::before { content: "☑"; color: var(--pass); }
+  .md code { font-family: var(--mono); font-size: 12px; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  .md pre { background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow-x: auto; }
+  .md pre code { background: none; padding: 0; }
+  .md blockquote { border-left: 2px solid var(--line); padding-left: 12px; color: var(--muted); }
+  .md a { color: var(--active); }
+  .md table { border-collapse: collapse; font-size: 13px; display: block; overflow-x: auto; }
+  .md th, .md td { border: 1px solid var(--line); padding: 5px 9px; text-align: left; }
+  .verdict { display: inline-block; font-family: var(--mono); font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 6px; margin-bottom: 14px; }
+  .verdict.good { color: var(--pass); background: color-mix(in srgb, var(--pass) 14%, transparent); }
+  .verdict.warn { color: var(--changes); background: color-mix(in srgb, var(--changes) 16%, transparent); }
+  .verdict.stop { color: var(--fail); background: color-mix(in srgb, var(--fail) 16%, transparent); }
+  pre.log {
+    margin: 0; font-family: var(--mono); font-size: 11.5px; line-height: 1.5; white-space: pre-wrap;
+    background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px;
+    max-height: calc(100vh - 220px); overflow: auto;
+  }
+  .shots { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
+  .shots figure { margin: 0; min-width: 0; }
+  .shots img { width: 100%; height: auto; display: block; border: 1px solid var(--line); border-radius: 6px; background: var(--code-bg); }
+  .shots figcaption { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 4px; overflow-wrap: anywhere; }
+  .shots .pair { grid-column: 1 / -1; min-width: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px;
+    padding: 10px; border: 1px solid var(--line); border-radius: 8px; }
+  .shots .pair > h4 { grid-column: 1 / -1; margin: 0; font-family: var(--mono); font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+  .shots .pair figcaption b { text-transform: uppercase; letter-spacing: .04em; }
+  .hint { color: var(--faint); font-size: 13px; }
+  .doc-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
+  .doc-bar .doc-copy { margin-left: auto; font-size: 11.5px; padding: 3px 10px; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .seg button { background: none; border: 0; padding: 3px 12px; cursor: pointer; font-size: 12px; color: var(--muted); }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button[aria-pressed="true"] { background: var(--card-hover); color: var(--text); font-weight: 600; }
+  .seg button:focus-visible { outline: 2px solid var(--active); outline-offset: -2px; }
+  pre.raw {
+    margin: 0; font-family: var(--mono); font-size: 12px; line-height: 1.55; white-space: pre-wrap;
+    overflow-wrap: anywhere; background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px;
+  }
+
+  footer { padding: 0 24px 14px; font-family: var(--mono); font-size: 11px; color: var(--faint); display: flex; gap: 8px 20px; flex-wrap: wrap; }
+
+  @media (max-width: 640px) {
+    header { padding: 18px 16px 4px; }
+    .banner, .backlog { margin-left: 16px; margin-right: 16px; }
+    body { overflow-x: clip; overflow-y: auto; display: block; height: auto; }
+    .board-wrap { padding: 14px 16px 28px; overflow: visible; }
+    .board { grid-template-columns: 1fr; min-width: 0; row-gap: 22px; height: auto; }
+    .col { overflow: visible; }
+    footer { padding: 0 16px 24px; }
+    .d-head { padding: 16px; }
+    .d-body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+    .files { border-right: 0; border-bottom: 1px solid var(--line); display: flex; gap: 4px; overflow-x: auto; padding: 8px; }
+    .files .group { display: none; }
+    .file { width: auto; white-space: nowrap; }
+    .file .rn { display: inline; white-space: pre; }
+    .doc { padding: 18px 16px 48px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="h-title">Software Factory<small id="h-repo"></small></h1>
+  <div class="meta">
+    <span id="counts"></span>
+    <span class="status" id="status">connecting…</span>
+  </div>
+</header>
+<div id="banner"></div>
+<details class="backlog" id="backlog"><summary id="backlog-sum">Backlog</summary><ul id="backlog-list"></ul></details>
+<div class="board-wrap"><main class="board" id="board"></main></div>
+<footer id="footer"></footer>
+
+<div id="overlay">
+  <div class="scrim" data-close></div>
+  <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="d-title">
+    <div class="resize" id="d-resize" role="separator" aria-orientation="vertical" aria-label="Resize panel"
+      tabindex="0" title="Drag to resize · double-click to reset"></div>
+    <div class="d-head">
+      <div class="num" id="d-num"></div>
+      <h3 id="d-title"></h3>
+      <div class="branch" id="d-branch"></div>
+      <button class="close" data-close aria-label="Close">×</button>
+    </div>
+    <div class="d-body">
+      <nav class="files" id="d-files" aria-label="Job files"></nav>
+      <article class="doc" id="d-scroll"><div class="md" id="d-doc"></div></article>
+    </div>
+  </aside>
+</div>
+
+<script>
+const POLL_MS = 2000
+
+// Everything repo-specific comes from factory.json (rendered from .factory/config/factory.yaml).
+let CFG = null
+let TICKET_BROWSE = ''
+let MAX_ROUNDS = 3
+let COLUMNS = []
+let STAGE_COL = {}
+let LIVE = new Set()
+let YOU = new Set()
+let GATE = []
+let REVIEWERS = []
+let JOB_FILES = []
+let SKIP_DIRS = /^$/
+let HAS_COVERAGE = false
+let HEADLESS = false
+let DELIVERY_STAGE = null
+let CLI = '/factory'
+
+const reEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+function configure(cfg) {
+  CFG = cfg
+  const title = cfg.repo.title || `${cfg.repo.name} Software Factory`
+  document.title = title
+  $('h-title').firstChild.textContent = title
+  $('h-repo').textContent = cfg.repo.name
+  TICKET_BROWSE = (cfg._derived && cfg._derived.jira_browse) || ''
+  MAX_ROUNDS = cfg.loop.max_rounds
+  HEADLESS = cfg.runtime.kind !== 'claude-code'
+  CLI = HEADLESS ? 'factory' : '/factory'
+  // Columns follow the run order (the success edges), not the order of the list in the config.
+  const order = (cfg._derived && cfg._derived.order) || cfg.loop.stages.map((s) => s.id)
+  const stages = order.map((id) => cfg.loop.stages.find((s) => s.id === id)).filter(Boolean)
+  const mode = cfg.delivery.mode
+  DELIVERY_STAGE = stages.find((s) => s.kind === 'delivery') || null
+  const buildLabel = cfg.ui.build_label || cfg.builders.map((b) => b.id).join(' ∥ ')
+  const firstApproval = stages.findIndex((s) => s.kind === 'approval')
+  const plan = stages.filter((s, i) => s.kind === 'agent' && i < firstApproval)
+
+  COLUMNS = []
+  stages.forEach((s) => {
+    if (plan.includes(s)) {
+      if (s === plan[0]) {
+        COLUMNS.push({ key: 'plan', stages: plan.map((p) => p.id), label: 'Plan', who: plan.map((p) => p.title || p.id).join(' · ') })
+      }
+      return
+    }
+    const label = s.title || s.id
+    if (s.kind === 'approval') {
+      COLUMNS.push({ key: s.id, stages: [`awaiting-${s.id}`], label: `⏸ ${label}`, who: 'you', cls: 'you' })
+    } else if (s.kind === 'builders') {
+      COLUMNS.push({ key: s.id, stages: [s.id], label, who: buildLabel })
+    } else if (s.kind === 'gate') {
+      COLUMNS.push({ key: s.id, stages: [s.id], label, who: 'gate' })
+    } else if (s.kind === 'reviewers') {
+      COLUMNS.push({ key: s.id, stages: [s.id], label, who: 'reviewer-*' })
+    } else if (s.kind === 'delivery') {
+      if (mode === 'none') return
+      if (cfg.delivery.require_approval) {
+        COLUMNS.push({ key: s.id, stages: [`awaiting-${s.id}`, s.id], label: '⏸ Approve delivery', who: 'you', cls: 'you' })
+      } else {
+        COLUMNS.push({ key: s.id, stages: [s.id], label, who: mode })
+      }
+    } else {
+      COLUMNS.push({ key: s.id, stages: [s.id], label, who: s.agent || '' })
+    }
+  })
+  COLUMNS.push({ key: 'ready', stages: ['ready'], label: mode === 'none' ? 'Ready to push' : 'Ready', who: mode === 'none' ? 'you' : 'deliver', cls: 'ready-col' })
+  if (mode !== 'none') COLUMNS.push({ key: 'delivered', stages: ['delivered'], label: 'Delivered', who: mode, cls: 'ready-col' })
+  COLUMNS.push({ key: 'human', stages: ['needs-human'], label: 'Needs human', who: 'you', cls: 'you' })
+  STAGE_COL = Object.fromEntries(COLUMNS.flatMap((c) => c.stages.map((st) => [st, c.key])))
+  LIVE = new Set(stages.filter((s) => s.kind !== 'approval').map((s) => s.id))
+  YOU = new Set([...stages.filter((s) => s.kind === 'approval').map((s) => `awaiting-${s.id}`), 'needs-human'])
+  if (DELIVERY_STAGE) YOU.add(`awaiting-${DELIVERY_STAGE.id}`)
+  document.documentElement.style.setProperty('--cols', String(COLUMNS.length))
+
+  GATE = cfg.gate.steps.filter((g) => g.mode !== 'off').map((g) => [g.key, g.chip || g.key])
+  if (cfg.gate.secrets) {
+    const lint = GATE.findIndex(([k]) => k === 'lint')
+    GATE.splice(lint >= 0 ? lint + 1 : 0, 0, ['secrets', 'keys'])
+  }
+  HAS_COVERAGE = cfg.gate.steps.some((g) => g.coverage && (g.coverage.cobertura || g.coverage.json_summary))
+  REVIEWERS = [...cfg.reviewers.always, ...cfg.reviewers.routed].map((r) => [r.id, r.chip || r.id])
+
+  if (cfg.ui.job_files && cfg.ui.job_files.length) {
+    JOB_FILES = cfg.ui.job_files
+  } else {
+    const bi = stages.findIndex((s) => s.kind === 'builders')
+    const outputs = (from, to) => stages.slice(from, to).filter((s) => (s.kind === 'agent' || s.kind === 'integrate') && s.output).map((s) => s.output)
+    JOB_FILES = [
+      ...outputs(0, bi < 0 ? stages.length : bi), 'shots/',
+      ...(bi < 0 ? [] : cfg.builders.map((b) => `build-${b.id}.md`)),
+      ...(bi < 0 ? [] : outputs(bi, stages.length)),
+      'pr-title.txt', 'pr.md',
+      ...(cfg.connections.tickets.provider === 'jira' ? ['jira-comment.md'] : []),
+      'delivery.md',
+    ]
+  }
+  const skip = cfg.ui.skip_dirs || []
+  SKIP_DIRS = skip.length ? new RegExp(`^(${skip.map(reEscape).join('|')})\\/$`) : /^$/
+
+  const cmds = HEADLESS
+    ? ['factory run "<request>" [--ticket KEY] [--base <branch>]', 'factory next', 'factory sync', 'factory go <id>',
+      'factory approve <id>', 'factory rework <id> "<note>"', 'factory deliver <id>', 'factory status', 'factory studio']
+    : ['/factory <KEY|"request"> [--base <branch>]', '/factory sync', '/factory next', '/factory go <id>',
+      '/factory rework <id> "<note>"', '/factory deliver <id>', '/factory resume <id>', '/factory abandon <id>',
+      '/factory status', '/factory ui [stop]']
+  $('footer').innerHTML = cmds.map((c) => `<span>${esc(c)}</span>`).join('')
+}
+
+const $ = (id) => document.getElementById(id)
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
+
+let jobs = []
+let lastBoard = ''
+const roundCache = new Map()   // "<job>/<n>" -> chips of a finished round
+let openJobId = null
+let openPath = null
+let openText = undefined
+
+async function fetchText(url) {
+  const res = await fetch(url, { cache: 'no-store' })
+  if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`)
+  return res.text()
+}
+async function fetchOr(url, fallback) {
+  try { return await fetchText(url) } catch { return fallback }
+}
+
+// python -m http.server serves an HTML index for directories; read its links.
+async function listDir(dir) {
+  const doc = new DOMParser().parseFromString(await fetchText(dir), 'text/html')
+  return [...doc.querySelectorAll('a')]
+    .map((a) => decodeURIComponent(a.getAttribute('href') || ''))
+    .filter((h) => h && !h.startsWith('?') && !h.startsWith('/') && !h.startsWith('..'))
+}
+
+// ---- Data ------------------------------------------------------------------
+
+async function loadJobs() {
+  const ids = (await listDir('jobs/')).filter((h) => h.endsWith('/')).map((h) => h.slice(0, -1)).sort()
+  const loaded = await Promise.all(ids.map(async (id) => {
+    try { return JSON.parse(await fetchText(`jobs/${id}/job.json`)) } catch { return null }
+  }))
+  return loaded.filter(Boolean)
+}
+
+function firstLine(text) { return (text || '').split('\n')[0].trim() }
+function verdictOf(text) {
+  const m = firstLine(text).match(/^VERDICT:\s*(PASS|CHANGES)$/)
+  return m ? m[1] : 'invalid'
+}
+
+// Earlier rounds are read from their folders; a missing review file means the reviewer
+// did not run that round (routed out, or the gate failed first).
+async function pastRound(job, n) {
+  const key = `${job.id}/${n}`
+  if (roundCache.has(key)) return roundCache.get(key)
+  const base = `jobs/${job.id}/round-${n}/`
+  const present = new Set(await listDir(base).catch(() => []))
+  const gateText = present.has('gate.json') ? await fetchOr(base + 'gate.json', null) : null
+  let gate = Object.fromEntries([...GATE.map(([k]) => [k, 'missing']), ['coverage', null]])
+  if (gateText) { try { gate = JSON.parse(gateText) } catch { /* keep missing */ } }
+  const reviews = {}
+  await Promise.all(REVIEWERS.map(async ([k]) => {
+    const f = `review-${k}.md`
+    reviews[k] = present.has(f) ? verdictOf(await fetchOr(base + f, '')) : 'skipped'
+  }))
+  const row = { n, gate, reviews }
+  if (gateText) roundCache.set(key, row)
+  return row
+}
+
+async function roundsOf(job) {
+  const rows = []
+  for (let n = 1; n < (job.round || 0); n++) rows.push(await pastRound(job, n))
+  if (job.round > 0) rows.push({ n: job.round, gate: job.gate || {}, reviews: job.reviews || {}, current: true })
+  return rows
+}
+
+async function loadBacklog() {
+  const text = await fetchOr('backlog.md', '')
+  const items = []
+  for (const line of text.split('\n')) {
+    const m = line.match(/^- \[([ x!])\]\s+(.*)$/)
+    if (m) items.push({ state: m[1], text: m[2] })
+  }
+  return items
+}
+
+// ---- Board -----------------------------------------------------------------
+
+function ago(iso) {
+  const t = Date.parse(iso)
+  if (!t) return ''
+  const min = Math.max(0, Math.round((Date.now() - t) / 60000))
+  if (min < 60) return `${min}m`
+  const h = Math.floor(min / 60)
+  return h < 48 ? `${h}h ${min % 60}m` : `${Math.floor(h / 24)}d`
+}
+
+function chip(label, value, waiting, title) {
+  let cls = ''
+  if (value === 'PASS' || value === 'CHANGES' || value === 'FAIL') cls = value
+  else if (value === 'pending') cls = waiting ? 'wait' : ''
+  else if (value === 'skipped' || value === 'not-run') cls = 'skip'
+  else cls = 'bad'
+  const shown = cls === 'bad' ? `${label}?` : label
+  return `<span class="chip ${cls}" title="${esc(title)}: ${esc(value)}">${esc(shown)}</span>`
+}
+
+function roundRow(row, stage) {
+  const gateWaiting = row.current && stage === 'gate'
+  const reviewWaiting = row.current && stage === 'review'
+  const g = row.gate || {}
+  const cov = typeof g.coverage === 'number' ? `${Math.round(g.coverage)}%` : 'cov'
+  let covVal = 'pending'
+  if (typeof g.coverage === 'number') covVal = g.tests === 'FAIL' ? 'FAIL' : 'PASS'
+  else if (g.tests === 'PASS' || g.tests === 'FAIL') covVal = 'not-run'
+  const cells = [
+    ...GATE.map(([k, short]) => chip(short, g[k] || 'pending', gateWaiting, k)),
+    ...(HAS_COVERAGE ? [chip(cov, covVal, gateWaiting, 'coverage')] : []),
+    '<span class="sep"></span>',
+    ...REVIEWERS.map(([k, short]) => chip(short, (row.reviews || {})[k] || 'pending', reviewWaiting, `reviewer-${k}`)),
+  ]
+  return `<div class="round"><span class="r">R${row.n}</span>${cells.join('')}</div>`
+}
+
+// Cards are narrow, so each command is a labelled copy button; the full text is in its tooltip.
+function cmd(label, text, primary = false) {
+  return `<button class="copy act ${primary ? 'primary' : ''}" data-copy="${esc(text)}" title="${esc(text)}"
+    aria-label="Copy: ${esc(text)}">⧉ ${esc(label)}</button>`
+}
+
+function link(label, url) {
+  return `<a class="copy act primary" href="${esc(url)}" target="_blank" rel="noopener" title="${esc(url)}">↗ ${esc(label)}</a>`
+}
+
+function readyCommands(job) {
+  const dir = `.factory/jobs/${job.id}`
+  const git = CFG.connections.git
+  const out = [cmd('push', `git -C ${job.worktree} push -u ${git.remote} ${job.branch}`, true)]
+  const title = `"$(cat ${dir}/pr-title.txt)"`
+  if (git.provider === 'github') {
+    out.push(cmd('gh pr create', `gh pr create --base ${job.base} --head ${job.branch} --title ${title} --body-file ${dir}/pr.md`, true))
+  } else if (git.provider === 'gitlab') {
+    out.push(cmd('glab mr create', `glab mr create --target-branch ${job.base} --source-branch ${job.branch} --title ${title} --description "$(cat ${dir}/pr.md)"`, true))
+  }
+  return out
+}
+
+function actions(job) {
+  const id = job.id
+  const st = job.stage || ''
+  const awaiting = st.startsWith('awaiting-') ? st.slice('awaiting-'.length) : null
+  const isDelivery = awaiting && DELIVERY_STAGE && awaiting === DELIVERY_STAGE.id
+  if (isDelivery) {
+    return HEADLESS
+      ? [cmd('deliver', `factory deliver ${id}`, true), cmd('approve', `factory approve ${id} --stage ${awaiting}`)]
+      : [cmd('deliver', `/factory deliver ${id}`, true)]
+  }
+  if (awaiting) {
+    return HEADLESS
+      ? [cmd('go', `factory go ${id}`, true), cmd('approve', `factory approve ${id} --stage ${awaiting}`), cmd('rework', `factory rework ${id} "<note>"`)]
+      : [cmd('go', `/factory go ${id}`, true), cmd('rework', `/factory rework ${id} "<note>"`)]
+  }
+  if (st === 'needs-human') return [cmd('rework', `${CLI} rework ${id} "<note>"`, true)]
+  if (st === 'ready') {
+    return CFG.delivery.mode === 'none' ? readyCommands(job) : [cmd('deliver', `${CLI} deliver ${id}`, true)]
+  }
+  if (st === 'delivered' && job.delivery && job.delivery.url) return [link(CFG.delivery.mode === 'pr' ? 'open PR' : 'open', job.delivery.url)]
+  return []
+}
+
+function card(job, rows) {
+  const live = LIVE.has(job.stage)
+  const you = YOU.has(job.stage)
+  const [num] = job.id.split('-')
+  const tk = job.ticket || job.jira
+  const jira = !tk ? '' : TICKET_BROWSE
+    ? `<a class="jira" href="${esc(TICKET_BROWSE + tk)}" target="_blank" rel="noopener">${esc(tk)}</a>`
+    : `<span class="jira">${esc(tk)}</span>`
+  const acts = actions(job)
+  const roundLabel = job.round ? ` · round ${job.round}/${MAX_ROUNDS}` : ''
+  return `
+    <div class="card ${live ? 'live' : ''} ${you ? 'you' : ''} ${job.stage === 'ready' ? 'ready' : ''}"
+         role="button" tabindex="0" data-job="${esc(job.id)}" aria-label="${esc(job.id)}: ${esc(job.feature)}">
+      <div class="card-top">
+        ${live ? '<span class="pulse" aria-label="running"></span>' : ''}
+        <span class="num">${esc(num)}</span>${jira}
+        <span class="age" title="time in this stage">${esc(ago(job.stageSince || job.updated))}</span>
+      </div>
+      <p class="feature">${esc(job.feature)}</p>
+      <div class="branch" title="${esc(job.branch)} → ${esc(job.base)}">${esc(job.branch)} → ${esc(job.base)}</div>
+      ${live && job.agent ? `<div class="agent">● ${esc(job.agent)}${esc(roundLabel)}</div>` : ''}
+      ${!live && job.note && job.stage !== 'ready' && !job.note.startsWith('/factory') ? `<div class="note">${esc(job.note)}</div>` : ''}
+      ${rows.length ? `<div class="rounds">${rows.map((r) => roundRow(r, job.stage)).join('')}</div>` : ''}
+      ${acts.length ? `<div class="actions">${acts.join('')}</div>` : ''}
+    </div>`
+}
+
+async function renderBoard() {
+  const problems = []
+  const byCol = Object.fromEntries(COLUMNS.map((c) => [c.key, []]))
+  const visible = jobs.filter((j) => j.stage !== 'abandoned')
+  const rows = await Promise.all(visible.map(roundsOf))
+  visible.forEach((job, i) => {
+    const col = STAGE_COL[job.stage]
+    if (!col) problems.push(`Job ${job.id} has unknown stage "${job.stage}"`)
+    else byCol[col].push(card(job, rows[i]))
+  })
+  const html = COLUMNS.map((c) => `
+    <section class="col ${c.cls || ''}" aria-label="${esc(c.label)}">
+      <div class="col-head"><h3>${esc(c.label)}</h3><span class="who">${esc(c.who)}</span>
+        <span class="count">${byCol[c.key].length || ''}</span></div>
+      ${byCol[c.key].reverse().join('') || '<div class="empty">–</div>'}
+    </section>`).join('')
+  const banner = problems.map((p) => `<div class="banner">${esc(p)}</div>`).join('')
+
+  const running = visible.filter((j) => LIVE.has(j.stage)).length
+  const waiting = visible.filter((j) => YOU.has(j.stage) || j.stage === 'ready').length
+  const abandoned = jobs.length - visible.length
+  const counts = `<b>${running}</b> running · <span class="waiting"><b>${waiting}</b> waiting on you</span>` +
+    (abandoned ? ` · ${abandoned} abandoned` : '')
+
+  const key = html + banner + counts
+  if (key !== lastBoard) {
+    lastBoard = key
+    $('board').innerHTML = html
+    $('banner').innerHTML = banner
+    $('counts').innerHTML = counts
+  }
+}
+
+async function renderBacklog() {
+  const items = await loadBacklog()
+  const queued = items.filter((i) => i.state === ' ')
+  const blocked = items.filter((i) => i.state === '!')
+  $('backlog-sum').textContent = `Backlog: ${queued.length} queued · ${blocked.length} blocked`
+  const li = (i, cls) => {
+    const [key, ...rest] = i.text.split(' · ')
+    return `<li class="${cls}"><span class="k">${esc(key)}</span>${rest.length ? ' · ' + esc(rest.join(' · ')) : ''}</li>`
+  }
+  const html = [...blocked.map((i) => li(i, 'blocked')), ...queued.map((i) => li(i, ''))].join('') ||
+    (CFG.connections.tickets.provider === 'jira' ? `<li>Empty. Run ${esc(CLI)} sync.</li>`
+      : '<li>Empty. Add lines like <code>- [ ] base: main · what to build</code> to .factory/backlog.md.</li>')
+  if ($('backlog-list').innerHTML !== html) $('backlog-list').innerHTML = html
+}
+
+async function poll() {
+  const status = $('status')
+  try {
+    jobs = await loadJobs()
+    await Promise.all([renderBoard(), renderBacklog()])
+    if (openJobId) await refreshDrawer()
+    status.className = 'status'
+    status.innerHTML = `<span class="dot"></span>live · ${new Date().toLocaleTimeString()}`
+  } catch (err) {
+    status.className = 'status error'
+    status.innerHTML = `<span class="dot"></span>${esc(err.message)}`
+  }
+}
+
+// ---- Drawer ----------------------------------------------------------------
+
+// Only the job's own files, its shots/ and its round-N/ folders are shown. Agent
+// scratch (mockup copies, harness homes and their app logs) stays out of the list.
+async function listJobFiles(dir, prefix = '') {
+  const out = []
+  for (const h of await listDir(dir)) {
+    if (h.endsWith('/')) {
+      if (SKIP_DIRS.test(h)) continue
+      if (h === 'shots/') { out.push(prefix + 'shots/'); continue }
+      if (!prefix && /^round-\d+\/$/.test(h)) out.push(...await listJobFiles(dir + h, prefix + h))
+    } else if (/\.(md|log|txt)$/.test(h)) {
+      out.push(prefix + h)
+    }
+  }
+  return out
+}
+
+function rank(path) {
+  const r = path.match(/^round-(\d+)\/(.*)$/)
+  if (!r) {
+    const i = JOB_FILES.indexOf(path)
+    return [0, i === -1 ? 50 : i * 10 + (path.startsWith('rework-') ? 5 : 0), path]
+  }
+  const inner = r[2]
+  const order = ['gate.log', ...REVIEWERS.map(([k]) => `review-${k}.md`), 'shots/']
+  const i = order.indexOf(inner)
+  return [1 + Number(r[1]), i === -1 ? 99 : i, path]
+}
+function sortFiles(files) {
+  return files.sort((a, b) => {
+    const [x, y] = [rank(a), rank(b)]
+    return x[0] - y[0] || x[1] - y[1] || x[2].localeCompare(y[2])
+  })
+}
+
+function tone(first) {
+  if (/^(VERDICT:\s*PASS|READY|STATUS:\s*READY)$/.test(first)) return 'good'
+  if (/^VERDICT:\s*CHANGES$/.test(first)) return 'warn'
+  if (/^(ESCALATE|BLOCKED|STATUS:\s*BLOCKED)$/.test(first)) return 'stop'
+  return null
+}
+
+const firstLines = new Map()
+
+function label(path) {
+  if (path === 'shots/') return 'design mockup'
+  const inner = path.includes('/') ? path.slice(path.indexOf('/') + 1) : path
+  return inner.replace(/^review-/, '').replace(/\.md$/, '').replace(/\/$/, '')
+}
+
+async function renderShots(dir) {
+  const imgs = (await listDir(dir)).filter((h) => /\.(png|jpe?g)$/i.test(h)).sort()
+  if (!imgs.length) return '<p class="hint">No screenshots yet.</p>'
+  // <stem>-before / -mockup / -after shots of the same view and state sit side by side.
+  const PHASES = ['before', 'mockup', 'after']
+  const fig = (f, cap) => `
+    <figure><a href="${esc(dir + f)}" target="_blank" rel="noopener"><img loading="lazy" src="${esc(dir + f)}" alt="${esc(f)}"></a>
+    <figcaption>${cap}</figcaption></figure>`
+  const groups = new Map()
+  for (const f of imgs) {
+    const m = f.match(/^(.*)-(before|mockup|after)\.(png|jpe?g)$/i)
+    const key = m ? m[1] : f
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key).push({ f, phase: m ? m[2].toLowerCase() : null })
+  }
+  return '<div class="shots">' + [...groups].map(([stem, items]) => {
+    if (items.length === 1 && !items[0].phase) return fig(items[0].f, esc(items[0].f))
+    items.sort((a, b) => PHASES.indexOf(a.phase) - PHASES.indexOf(b.phase))
+    return `<div class="pair" style="grid-template-columns: repeat(${items.length}, minmax(0, 1fr))"><h4>${esc(stem)}</h4>` +
+      items.map((i) => fig(i.f, i.phase ? `<b>${esc(i.phase)}</b>` : esc(i.f))).join('') + '</div>'
+  }).join('') + '</div>'
+}
+
+// Preview/Raw is remembered per browser; Raw is what you paste into GitHub or Jira.
+let viewMode = 'preview'
+try { viewMode = localStorage.getItem('factory.viewMode') === 'raw' ? 'raw' : 'preview' } catch { /* storage blocked */ }
+let openRaw = null
+
+function docToolbar(isMd, raw) {
+  const seg = isMd ? `
+    <div class="seg" role="group" aria-label="View">
+      <button data-view="preview" aria-pressed="${!raw}">Preview</button>
+      <button data-view="raw" aria-pressed="${raw}">Raw</button>
+    </div>` : ''
+  return `<div class="doc-bar">${seg}<button class="copy doc-copy" data-copy-doc>copy raw</button></div>`
+}
+
+async function refreshDrawer() {
+  const job = jobs.find((j) => j.id === openJobId)
+  if (!job) return
+  $('d-num').textContent = `${job.id} · ${job.stage}${job.round ? ` · round ${job.round}` : ''}`
+  $('d-title').textContent = job.feature
+  $('d-branch').textContent = `${job.branch} → ${job.base}`
+
+  const base = `jobs/${job.id}/`
+  const files = sortFiles(await listJobFiles(base))
+  if (!openPath || !files.includes(openPath)) {
+    // A job that is ready to push opens on its PR body; everything else on its spec.
+    openPath = job.stage === 'ready' && files.includes('pr.md') ? 'pr.md' : files[0] || null
+  }
+
+  await Promise.all(files.filter((f) => f.endsWith('.md') && (!firstLines.has(base + f) || f === openPath)).map(async (f) => {
+    firstLines.set(base + f, firstLine(await fetchOr(base + f, '')))
+  }))
+
+  let group = null
+  const nav = files.map((f) => {
+    const r = f.match(/^round-(\d+)\//)
+    const g = r ? `Round ${r[1]}` : 'Job'
+    const head = g !== group ? `<div class="group">${esc(g)}</div>` : ''
+    group = g
+    const t = tone(firstLines.get(base + f) || '')
+    return `${head}<button class="file ${f === openPath ? 'on' : ''}" data-file="${esc(f)}">
+      <span class="v ${t || ''}"></span>${r ? `<span class="rn">R${r[1]} </span>` : ''}${esc(label(f))}</button>`
+  }).join('') || '<div class="empty">No files yet.</div>'
+  if ($('d-files').innerHTML !== nav) $('d-files').innerHTML = nav
+
+  let html
+  openRaw = null
+  if (!openPath) html = '<p class="hint">Nothing written yet.</p>'
+  else if (openPath.endsWith('shots/')) html = await renderShots(base + openPath)
+  else {
+    const text = await fetchOr(base + openPath, '')
+    if (openPath.endsWith('.log')) html = `<pre class="log" id="log">${esc(text)}</pre>`
+    else {
+      openRaw = text
+      const isMd = openPath.endsWith('.md')
+      const raw = !isMd || viewMode === 'raw'
+      html = docToolbar(isMd, raw) + (raw ? `<pre class="raw">${esc(text)}</pre>` : markdown(text))
+    }
+  }
+  if (html !== openText) {
+    openText = html
+    $('d-doc').innerHTML = html
+    const log = $('log')
+    if (log) log.scrollTop = log.scrollHeight
+  }
+}
+
+// ---- Drawer width ----------------------------------------------------------
+
+const DRAWER_DEFAULT = 980
+const DRAWER_MIN = 480
+const drawerMax = () => Math.max(DRAWER_MIN, window.innerWidth - 40)
+const clampWidth = (w) => Math.round(Math.min(Math.max(w, DRAWER_MIN), drawerMax()))
+// preferredWidth is what the user chose; drawerWidth is that, clamped to the current window.
+let preferredWidth = DRAWER_DEFAULT
+try { preferredWidth = Number(localStorage.getItem('factory.drawerWidth')) || DRAWER_DEFAULT } catch { /* storage blocked */ }
+let drawerWidth = preferredWidth
+
+function setDrawerWidth(w, save = true) {
+  drawerWidth = clampWidth(w)
+  if (save) preferredWidth = drawerWidth
+  document.documentElement.style.setProperty('--drawer-w', `${drawerWidth}px`)
+  const handle = $('d-resize')
+  handle.setAttribute('aria-valuenow', String(drawerWidth))
+  handle.setAttribute('aria-valuemin', String(DRAWER_MIN))
+  handle.setAttribute('aria-valuemax', String(drawerMax()))
+  if (save) try { localStorage.setItem('factory.drawerWidth', String(drawerWidth)) } catch { /* storage blocked */ }
+}
+setDrawerWidth(preferredWidth, false)
+
+{
+  const handle = $('d-resize')
+  handle.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    handle.setPointerCapture(e.pointerId)
+    document.body.classList.add('resizing')
+  })
+  handle.addEventListener('pointermove', (e) => {
+    if (!handle.hasPointerCapture(e.pointerId)) return
+    setDrawerWidth(window.innerWidth - e.clientX, false)
+  })
+  const stop = (e) => {
+    if (!handle.hasPointerCapture(e.pointerId)) return
+    handle.releasePointerCapture(e.pointerId)
+    document.body.classList.remove('resizing')
+    setDrawerWidth(drawerWidth)
+  }
+  handle.addEventListener('pointerup', stop)
+  handle.addEventListener('pointercancel', stop)
+  handle.addEventListener('dblclick', () => setDrawerWidth(DRAWER_DEFAULT))
+  handle.addEventListener('keydown', (e) => {
+    const step = e.shiftKey ? 100 : 20
+    if (e.key === 'ArrowLeft') setDrawerWidth(drawerWidth + step)
+    else if (e.key === 'ArrowRight') setDrawerWidth(drawerWidth - step)
+    else if (e.key === 'Home') setDrawerWidth(drawerMax())
+    else if (e.key === 'End') setDrawerWidth(DRAWER_MIN)
+    else return
+    e.preventDefault()
+  })
+  window.addEventListener('resize', () => setDrawerWidth(preferredWidth, false))
+}
+
+let lastFocus = null
+async function openDrawer(id) {
+  lastFocus = document.activeElement
+  openJobId = id
+  openPath = null
+  openText = undefined
+  document.body.classList.add('open')
+  try { await refreshDrawer() } catch (err) { $('d-doc').innerHTML = `<p class="hint">${esc(err.message)}</p>` }
+  document.querySelector('.close').focus()
+}
+function closeDrawer() {
+  if (!openJobId) return
+  openJobId = null
+  document.body.classList.remove('open')
+  if (lastFocus) lastFocus.focus()
+}
+
+async function copy(btn, text = btn.dataset.copy) {
+  const label = btn.textContent
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch {
+    const ta = Object.assign(document.createElement('textarea'), { value: text })
+    document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove()
+  }
+  btn.textContent = 'copied'; btn.classList.add('done')
+  setTimeout(() => { btn.textContent = label; btn.classList.remove('done') }, 1500)
+}
+
+document.addEventListener('click', (e) => {
+  const copyBtn = e.target.closest('[data-copy]')
+  if (copyBtn) { e.stopPropagation(); return copy(copyBtn) }
+  const docCopy = e.target.closest('[data-copy-doc]')
+  if (docCopy) return openRaw !== null && copy(docCopy, openRaw)
+  const viewBtn = e.target.closest('[data-view]')
+  if (viewBtn) {
+    viewMode = viewBtn.dataset.view
+    try { localStorage.setItem('factory.viewMode', viewMode) } catch { /* storage blocked */ }
+    openText = undefined
+    return refreshDrawer()
+  }
+  if (e.target.closest('a')) return
+  const cardEl = e.target.closest('[data-job]')
+  if (cardEl) return openDrawer(cardEl.dataset.job)
+  const fileEl = e.target.closest('[data-file]')
+  if (fileEl) {
+    openPath = fileEl.dataset.file
+    openText = undefined
+    $('d-scroll').scrollTop = 0
+    return refreshDrawer()
+  }
+  if (e.target.closest('[data-close]')) closeDrawer()
+})
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') return closeDrawer()
+  const cardEl = e.target.closest && e.target.closest('[data-job]')
+  if (cardEl && e.target === cardEl && (e.key === 'Enter' || e.key === ' ')) {
+    e.preventDefault()
+    openDrawer(cardEl.dataset.job)
+  }
+})
+
+// ---- Markdown (just enough for the factory's files) ------------------------
+
+function inline(s) {
+  const codes = []
+  s = esc(s).replace(/`([^`]+)`/g, (_, c) => `\u0000${codes.push(c) - 1}\u0000`)
+  s = s
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>')
+    .replace(/\[([^\]]+)\]\(((?:https?:\/\/|\.{0,2}\/|#)[^)\s]*)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+  return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${codes[i]}</code>`)
+}
+
+function markdown(src) {
+  // HTML comments (PR template instructions) are invisible on GitHub, so hide them here too.
+  const lines = src.replace(/\r/g, '').replace(/<!--[\s\S]*?-->/g, '').split('\n')
+  let i = 0
+  let html = ''
+  const first = (lines[0] || '').trim()
+  const t = tone(first)
+  if (t) { html += `<div class="verdict ${t}">${esc(first)}</div>`; i = 1 }
+
+  const isList = (l) => /^\s*([-*+]|\d+\.)\s+/.test(l)
+  const isBlockStart = (l) => /^(#{1,6}\s|```|\s*>|\|)/.test(l) || isList(l)
+
+  while (i < lines.length) {
+    const line = lines[i]
+    if (!line.trim()) { i++; continue }
+    if (line.startsWith('```')) {
+      const body = []
+      i++
+      while (i < lines.length && !lines[i].startsWith('```')) body.push(lines[i++])
+      i++
+      html += `<pre><code>${esc(body.join('\n'))}</code></pre>`
+      continue
+    }
+    const h = line.match(/^(#{1,6})\s+(.*)$/)
+    if (h) { const n = Math.min(h[1].length, 4); html += `<h${n}>${inline(h[2])}</h${n}>`; i++; continue }
+    if (/^\s*>/.test(line)) {
+      const body = []
+      while (i < lines.length && /^\s*>/.test(lines[i])) body.push(lines[i++].replace(/^\s*>\s?/, ''))
+      html += `<blockquote>${body.map(inline).join('<br>')}</blockquote>`
+      continue
+    }
+    if (line.startsWith('|')) {
+      const rows = []
+      while (i < lines.length && lines[i].startsWith('|')) rows.push(lines[i++])
+      const cells = (r) => r.replace(/^\||\|$/g, '').split('|').map((c) => inline(c.trim()))
+      const body = rows.filter((r) => !/^\|[\s:|-]+\|$/.test(r))
+      html += '<table>' + body.map((r, n) => `<tr>${cells(r).map((c) => n ? `<td>${c}</td>` : `<th>${c}</th>`).join('')}</tr>`).join('') + '</table>'
+      continue
+    }
+    if (isList(line)) {
+      const ordered = /^\s*\d+\./.test(line)
+      const items = []
+      while (i < lines.length && (isList(lines[i]) || (/^\s{2,}\S/.test(lines[i]) && items.length))) {
+        const l = lines[i++]
+        if (isList(l)) items.push({ indent: l.match(/^\s*/)[0].length, text: l.replace(/^\s*([-*+]|\d+\.)\s+/, '') })
+        else items[items.length - 1].text += ' ' + l.trim()
+      }
+      const lis = items.map(({ indent, text }) => {
+        const task = text.match(/^\[([ xX])\]\s+(.*)$/)
+        const style = indent ? ` style="margin-left:${indent * 0.6}em"` : ''
+        return task
+          ? `<li class="task ${task[1] === ' ' ? '' : 'done'}"${style}>${inline(task[2])}</li>`
+          : `<li${style}>${inline(text)}</li>`
+      }).join('')
+      html += ordered ? `<ol>${lis}</ol>` : `<ul>${lis}</ul>`
+      continue
+    }
+    const para = []
+    while (i < lines.length && lines[i].trim() && !isBlockStart(lines[i])) para.push(lines[i++])
+    html += `<p>${inline(para.join(' '))}</p>`
+  }
+  return html
+}
+
+async function init() {
+  try {
+    configure(JSON.parse(await fetchText('factory.json')))
+  } catch (err) {
+    const status = $('status')
+    status.className = 'status error'
+    status.innerHTML = `<span class="dot"></span>factory.json: ${esc(err.message)}. Run: factory render`
+    return
+  }
+  poll()
+  setInterval(poll, POLL_MS)
+}
+init()
+</script>
+</body>
+</html>
