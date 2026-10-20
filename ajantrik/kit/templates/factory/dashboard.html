@@ -347,6 +347,11 @@ let JOB_FILES = []
 let SKIP_DIRS = /^$/
 let HAS_COVERAGE = false
 let HEADLESS = false
+// Inside the studio's Board tab the page is served under /p/<pid>/board/ and can ask the studio to act for it.
+// ui.sh serves /dashboard.html on its own, so there the buttons stay copy-only.
+const EMBEDDED = window.parent !== window && /\/board\/[^/]*$/.test(location.pathname)
+// `${job}:${action}` of the clicks the studio has not answered yet, so a re-render keeps the button disabled.
+const PENDING = new Set()
 let DELIVERY_STAGE = null
 let CLI = '/factory'
 
@@ -567,6 +572,13 @@ function cmd(label, text, primary = false) {
     aria-label="Copy: ${esc(text)}">⧉ ${esc(label)}</button>`
 }
 
+// An action button the studio carries out: the board never holds the token, it only posts a message to its parent.
+function act(label, job, action, stage = '', primary = false) {
+  const text = `${action} ${job}`
+  return `<button class="copy act ${primary ? 'primary' : ''}" data-act="${esc(action)}" data-job-id="${esc(job)}"
+    data-stage="${esc(stage)}" title="${esc(text)}" aria-label="${esc(text)}" ${PENDING.has(`${job}:${action}`) ? 'disabled' : ''}>▶ ${esc(label)}</button>`
+}
+
 function link(label, url) {
   return `<a class="copy act primary" href="${esc(url)}" target="_blank" rel="noopener" title="${esc(url)}">↗ ${esc(label)}</a>`
 }
@@ -589,12 +601,15 @@ function actions(job) {
   const st = job.stage || ''
   const awaiting = st.startsWith('awaiting-') ? st.slice('awaiting-'.length) : null
   const isDelivery = awaiting && DELIVERY_STAGE && awaiting === DELIVERY_STAGE.id
+  const live = HEADLESS && EMBEDDED
   if (isDelivery) {
+    if (live) return [act('deliver', id, 'deliver', '', true), act('approve', id, 'approve', awaiting)]
     return HEADLESS
       ? [cmd('deliver', `factory deliver ${id}`, true), cmd('approve', `factory approve ${id} --stage ${awaiting}`)]
       : [cmd('deliver', `/factory deliver ${id}`, true)]
   }
   if (awaiting) {
+    if (live) return [act('go', id, 'go', '', true), cmd('rework', `factory rework ${id} "<note>"`)]
     return HEADLESS
       ? [cmd('go', `factory go ${id}`, true), cmd('approve', `factory approve ${id} --stage ${awaiting}`), cmd('rework', `factory rework ${id} "<note>"`)]
       : [cmd('go', `/factory go ${id}`, true), cmd('rework', `/factory rework ${id} "<note>"`)]
@@ -922,6 +937,19 @@ async function copy(btn, text = btn.dataset.copy) {
 }
 
 document.addEventListener('click', (e) => {
+  const actBtn = e.target.closest('[data-act]')
+  if (actBtn) {
+    e.stopPropagation()
+    const { act: action, jobId: job, stage } = actBtn.dataset
+    const key = `${job}:${action}`
+    if (PENDING.has(key)) return
+    PENDING.add(key)
+    actBtn.disabled = true
+    // No reply (the studio dropped the message or went away): give the button back after a while.
+    setTimeout(() => { if (PENDING.delete(key)) poll() }, 30000)
+    window.parent.postMessage({ type: 'factory-board-action', job, action, stage }, location.origin)
+    return
+  }
   const copyBtn = e.target.closest('[data-copy]')
   if (copyBtn) { e.stopPropagation(); return copy(copyBtn) }
   const docCopy = e.target.closest('[data-copy-doc]')
@@ -944,6 +972,12 @@ document.addEventListener('click', (e) => {
     return refreshDrawer()
   }
   if (e.target.closest('[data-close]')) closeDrawer()
+})
+window.addEventListener('message', (e) => {
+  if (!(e.source === window.parent && e.origin === location.origin)) return
+  if (!e.data || e.data.type !== 'factory-board-result') return
+  PENDING.delete(`${e.data.job}:${e.data.action}`)
+  poll()
 })
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') return closeDrawer()

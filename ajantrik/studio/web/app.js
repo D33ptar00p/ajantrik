@@ -1849,6 +1849,26 @@ function route() {
   else showHome()
 }
 window.addEventListener('hashchange', route)
+
+// ---- Board actions: the board iframe has no token, so it asks this page to act for it -----------------------
+const BOARD_ACTIONS = { go: 'Go', approve: 'Approve', deliver: 'Deliver' }
+window.addEventListener('message', async (event) => {
+  if (!(event.origin === location.origin && event.source === $('board-frame').contentWindow)) return
+  const { type, job, action, stage } = event.data || {}
+  if (type !== 'factory-board-action' || typeof action !== 'string' || !Object.hasOwn(BOARD_ACTIONS, action)) return
+  if (!S.pid || typeof job !== 'string' || !/^[0-9]{3}-[A-Za-z0-9_-]+$/.test(job)) return
+  if (action === 'approve' && !(typeof stage === 'string' && /^[a-z][a-z0-9-]*$/.test(stage))) return
+  let ok = false
+  try {
+    const r = await api('POST', `jobs/${job}/${action}`, action === 'approve' ? { stage } : {})
+    ok = !(r && r.error)
+    toast(r && r.error ? r.error : `${BOARD_ACTIONS[action]}: done`, !ok)
+  } catch (err) {
+    toast(err.message, true)
+  } finally {
+    event.source.postMessage({ type: 'factory-board-result', job, action, ok }, location.origin)
+  }
+})
 ;(async () => {
   try {
     const ws = await api('GET', 'workspace')
