@@ -1,6 +1,6 @@
 ---
 name: factory
-description: Run the ajantrik software factory. Use when the user types /factory <text> [--base <branch>], /factory go <job>, /factory deliver <job>, /factory rework <job> <note>, /factory resume <job>, /factory abandon <job>, /factory status, /factory next or /factory ui [stop|<port>]. The session that runs it becomes the orchestrator of the factory loop.
+description: Run the ajantrik software factory. Use when the user types /factory <TICKET-KEY|text> [--base <branch>], /factory go <job>, /factory deliver <job>, /factory rework <job> <note>, /factory resume <job>, /factory abandon <job>, /factory status, /factory sync, /factory next or /factory ui [stop|<port>]. The session that runs it becomes the orchestrator of the factory loop.
 disable-model-invocation: true
 ---
 
@@ -14,8 +14,9 @@ configuration: `python3 .factory/factory.py step <job>` tells you what to do nex
 tests, reviews or PR text yourself, and you never edit `job.json` by hand: `factory.py` writes it
 and the dashboard reads it.
 
-**Never push, never merge, never write to external services.** A finished job ends in `ready` with the
-exact push and PR commands for the user, or in `needs-human`.
+**Never push, merge or write to external services yourself.** Delivery (pr) is
+`python3 .factory/factory.py deliver <job>`, which runs only after the user approved it with
+`/factory deliver <job>`, and only after the outgoing secret scan passed.
 
 ## Security harness
 
@@ -38,7 +39,7 @@ and every agent: no secret files or env dumps, no data sent off the machine, no 
 ## The loop
 
 ```
-spec-writer → architect → ⏸ approval → test-author → builder-main → gate → reviewers (wait for all) → integrator → deliver: none
+spec-writer → architect → ⏸ approval → test-author → builder-main → gate → reviewers (wait for all) → integrator → deliver: pr (after ⏸ approval)
 fail / CHANGES → back to build (max 3 rounds, then needs-human)
 ```
 
@@ -52,7 +53,7 @@ fail / CHANGES → back to build (max 3 rounds, then needs-human)
 | gate | gate | `factory.py gate`: no steps | `round-<N>/gate.log`, `gate.json` |
 | review | reviewers | code, security | `round-<N>/review-<id>.md` |
 | integrate | integrate | `integrator` | `decision.md` (+ `pr-title.txt`, `pr.md`) |
-| deliver | delivery | `factory.py deliver` (none, after your approval) |  |
+| deliver | delivery | `factory.py deliver` (pr, after your approval) |  |
 
 `MAX_ROUNDS = 3`. A round is one gate run plus, if it passes, one review round. A failing gate uses up a round.
 
@@ -95,10 +96,12 @@ Run `python3 .factory/factory.py step <job>`. It prints one JSON action. Do what
 
 If `factory.py` exits non-zero, stop and show the user its message.
 
-## /factory <free text> [--base <branch>]
+## /factory <TICKET-KEY | free text> [--base <branch>]
 
-1. **Create.** `python3 .factory/factory.py new --json "<free text>" [--base <branch>]`. It runs
-   the preflight, creates the job, branch and worktree. If it fails, show the message and stop.
+1. **Create.** `python3 .factory/factory.py new --json --ticket <KEY> [--base <branch>]` (the factory
+   reads the ticket from jira itself), or `new --json "<free text>" [--base <branch>]`.
+   It runs the preflight, picks the base, creates the job, branch and worktree. If it fails, show
+   the message and stop.
 3. **Run the step loop** with the new job id.
 
 ## /factory go <job>
@@ -133,6 +136,14 @@ only if the user confirms again. The job folder stays as a record.
 
 `python3 .factory/factory.py status` and relay it.
 
+## /factory sync
+
+Read-only on jira; the only file it changes is `.factory/backlog.md`.
+Never pass `--push`: creating issues from backlog items is the user's, from the studio's Sync with
+Jira button or `factory sync --push` in a terminal (the guard blocks it here).
+
+`python3 .factory/factory.py sync` and relay its report.
+
 ## /factory next
 
 `python3 .factory/factory.py next --json` claims the first `- [ ]` backlog line and creates its
@@ -147,6 +158,6 @@ editing the factory itself (agents, skills, the loop, connections), the user run
 ## Reporting
 
 One short line per transition, for example
-`004-KEY-123-project-rename: round 2, security CHANGES, code PASS, ui skipped → resuming builders`.
+`004-AJT-123-project-rename: round 2, security CHANGES, code PASS, ui skipped → resuming builders`.
 When the job stops, say whether it is ready (with the commands), delivered (with the link),
 waiting for an approval, or needs a human, and why.

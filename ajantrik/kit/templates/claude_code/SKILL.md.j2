@@ -149,6 +149,8 @@ only if the user confirms again. The job folder stays as a record.
 ## /factory sync
 
 Read-only on {{ cfg.connections.tickets.provider }}; the only file it changes is `.factory/backlog.md`.
+Never pass `--push`: creating issues from backlog items is the user's, from the studio's Sync with
+Jira button or `factory sync --push` in a terminal (the guard blocks it here).
 {% if cfg.connections.tickets.mode == "mcp" %}
 1. **Query** with the Atlassian MCP (`searchJiraIssuesUsingJql`):
    `{{ cfg.connections.tickets.jql }}`, fields `summary`, `issuetype`, `status`, `parent`, `labels`.

@@ -261,10 +261,27 @@ class GuardTest(unittest.TestCase):
     # ---- approvals and delivery ------------------------------------------------------------------
     def test_agents_never_approve_or_deliver(self):
         for cmd in ("python3 .factory/factory.py approve 001-IST-1-thing", "factory approve 001",
-                    ".factory/factory.py deliver 001", "factory deliver 001-IST-1-thing"):
+                    ".factory/factory.py deliver 001", "factory deliver 001-IST-1-thing",
+                    "factory --json deliver 001"):
             with self.subTest(cmd=cmd):
                 self.assertBlocked(self.bash(cmd), "agents never approve")
         self.assertAllowed(self.bash("python3 .factory/factory.py step 001-IST-1-thing"))
+
+    def test_agents_never_push_the_backlog_to_jira(self):
+        for cmd in ("python3 .factory/factory.py sync --push", "factory sync --push", "factory --json sync --push"):
+            with self.subTest(cmd=cmd):
+                self.assertBlocked(self.bash(cmd), "the human's")
+        self.assertAllowed(self.bash("python3 .factory/factory.py sync"))
+
+    def test_orchestrator_never_pushes_the_backlog_to_jira(self):
+        sid = "orch-sync"
+        arm = {"tool_name": "Bash", "tool_input": {"command": ".factory/security/guard.py arm"}, "session_id": sid}
+        self.assertAllowed(self.run_hook("bash", arm, factory=False))
+        self.run_hook("prompt", {"prompt": "/factory sync", "session_id": sid}, factory=False)
+        push = {"tool_name": "Bash", "tool_input": {"command": "python3 .factory/factory.py sync --push"}, "session_id": sid}
+        self.assertBlocked(self.run_hook("bash", push, factory=False), "the human's")
+        pull = {**push, "tool_input": {"command": "python3 .factory/factory.py sync"}}
+        self.assertAllowed(self.run_hook("bash", pull, factory=False))
 
     def test_approval_records_are_read_only_to_the_factory(self):
         self.assertBlocked(self.files("Write", file_path=f"{self.job}/approvals/approval.json", content="{}"), "approvals")

@@ -475,20 +475,23 @@ FACTORY_CLI = re.compile(r"(^|/)factory(\.py)?$")
 
 
 def check_factory_cli(ctx: Ctx, name: str, argv: list[str]) -> None:
-    """`factory approve` / `factory deliver` (installed CLI or .factory/factory.py)."""
+    """`factory approve` / `factory deliver` / `factory sync --push` (installed CLI or .factory/factory.py)."""
     args = argv[1:]
     if name in ("python", "python3") and args and FACTORY_CLI.search(args[0]):
         args = args[1:]
     elif not FACTORY_CLI.search(name):
         return
-    sub = args[0] if args else ""
+    sub = next((a for a in args if not a.startswith("-")), "")  # past --json and other leading flags
+    if sub == "sync" and "--push" in args and (ctx.subagent or ctx.factory):
+        block("pushing the backlog to Jira is the human's: use the studio's Sync with Jira button or "
+              "`factory sync --push` in a terminal. Plain `factory sync` only reads Jira.")
     if sub not in ("approve", "deliver"):
         return
     if ctx.subagent:
         block(f"`factory {sub}` is the human's (or the orchestrator's, on the human's command); agents never "
               "approve or deliver a job.")
     if sub == "approve" and ctx.factory:
-        job = next((a for a in args[1:] if not a.startswith("-")), "")
+        job = next((a for a in args[args.index(sub) + 1:] if not a.startswith("-")), "")
         m = APPROVING_PROMPT.match(ctx.last_prompt())
         if not m or not job or not (job == m.group(1) or job.startswith(m.group(1) + "-")):
             block("`factory approve` needs the user's own `/factory go|approve|deliver <job>` as the last prompt; "

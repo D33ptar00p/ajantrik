@@ -354,6 +354,7 @@ class TicketConnection(_Model):
         "draft", description="draft: write jira-comment.md for a human. comment/transition: post on delivery."
     )
     transition_to: str | None = Field(None, description="Status to move the ticket to on delivery.")
+    create_type: str = Field("Task", description="Issue type for backlog items pushed to Jira by sync --push.")
     key_pattern: str = r"[A-Z][A-Z0-9]+-\d+"
 
     @field_validator("email_ref", "token_ref")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -291,3 +292,164 @@ def test_release_items_restores_the_original_lines_exactly(tmp_path):
     assert tix.backlog_path(tmp_path).read_bytes() != before
     tix.release_items(tmp_path, r["items"])
     assert tix.backlog_path(tmp_path).read_bytes() == before
+
+
+# ---- two-way sync with Jira -----------------------------------------------------------------------------
+JIRA_CFG = {"connections": {"tickets": {"provider": "jira", "mode": "rest", "site": "https://x.atlassian.net",
+                                        "project": "GEN", "label": "factory", "jql": "project = GEN",
+                                        "create_type": "Story"}},
+            "repo": {"default_base": "main"}}
+
+
+class FakeJira:
+    """Jira in memory: create adds to what search returns. `fail` makes create raise for those summaries."""
+    issues: ClassVar[list[dict]] = []
+    created: ClassVar[list[tuple]] = []
+    fail: ClassVar[set[str]] = set()
+    on_create = None
+
+    def __init__(self, conn):
+        self.conn = conn
+
+    def create(self, project, summary, issue_type, labels):
+        if summary in FakeJira.fail:
+            raise FactoryError("Jira POST /rest/api/3/issue: HTTP 400")
+        key = f"{project}-{100 + len(FakeJira.created)}"
+        FakeJira.created.append((project, summary, issue_type, labels))
+        FakeJira.issues.append({"key": key, "summary": summary, "epic": None})
+        if FakeJira.on_create:
+            FakeJira.on_create()
+        return key
+
+    def search(self, jql, limit=50):
+        return list(FakeJira.issues)
+
+    def get(self, key):
+        return {"epic": None}
+
+
+@pytest.fixture
+def jira(tmp_path, monkeypatch):
+    FakeJira.issues, FakeJira.created, FakeJira.fail, FakeJira.on_create = [], [], set(), None
+    monkeypatch.setattr(tix, "Jira", FakeJira)
+    monkeypatch.setattr(tix, "resolve_epic_base", lambda root, conn, epic, default, remote="origin": (default, "no epic"))
+    scans: list[list[str]] = []
+    monkeypatch.setattr(tix, "_secret_scan", lambda root, texts: scans.append(texts))
+    return scans
+
+
+def test_push_creates_issues_only_for_queued_items_without_a_ticket(tmp_path, jira):
+    write(tmp_path, "- [ ] base: dev · Escape names", TICKET, "- [!] blocked thing", DONE.replace("GEN-1 · ", ""))
+    report = tix.push_items(tmp_path, JIRA_CFG)
+    assert FakeJira.created == [("GEN", "Escape names", "Story", ["factory"])]
+    assert jira == [["Escape names"]]
+    lines = tix.backlog_path(tmp_path).read_text().splitlines()
+    assert "- [ ] GEN-100 · base: dev · Escape names" in lines
+    assert TICKET in lines and "- [!] blocked thing" in lines
+    assert report == ["GEN-100: created from the backlog"]
+
+
+def test_push_with_nothing_to_push_does_not_scan_or_call_jira(tmp_path, jira):
+    write(tmp_path, TICKET)
+    assert tix.push_items(tmp_path, JIRA_CFG) == []
+    assert jira == [] and FakeJira.created == []
+
+
+def test_sync_push_then_pull_does_not_duplicate_the_new_issue(tmp_path, jira):
+    write(tmp_path, QUEUED)
+    FakeJira.issues.append({"key": "GEN-7", "summary": "From Jira", "epic": None})
+    report = tix.sync(tmp_path, JIRA_CFG, [], push=True)
+    text = tix.backlog_path(tmp_path).read_text()
+    assert text.count("GEN-100") == 1
+    assert "- [ ] GEN-7 · base: main · From Jira" in text
+    assert report[0] == "GEN-100: created from the backlog"
+    assert "GEN-7: added (base main)" in report
+
+
+def test_sync_without_push_never_creates(tmp_path, jira):
+    write(tmp_path, QUEUED)
+    tix.sync(tmp_path, JIRA_CFG, [])
+    assert FakeJira.created == [] and jira == []
+    assert QUEUED in tix.backlog_path(tmp_path).read_text().splitlines()
+
+
+def test_push_leaves_a_line_edited_meanwhile_alone(tmp_path, jira):
+    path = write(tmp_path, QUEUED)
+    FakeJira.on_create = lambda: path.write_text(path.read_text().replace(QUEUED, "- [ ] edited by hand"))
+    report = tix.push_items(tmp_path, JIRA_CFG)
+    assert "- [ ] edited by hand" in path.read_text().splitlines()
+    assert "GEN-100" not in path.read_text()
+    assert report == ["GEN-100: created, but the backlog line changed: add the key by hand"]
+
+
+def test_one_failed_create_does_not_stop_the_others(tmp_path, jira):
+    write(tmp_path, "- [ ] one", "- [ ] two")
+    FakeJira.fail = {"one"}
+    report = tix.push_items(tmp_path, JIRA_CFG)
+    lines = tix.backlog_path(tmp_path).read_text().splitlines()
+    assert "- [ ] one" in lines and "- [ ] GEN-100 · two" in lines
+    assert report[0].startswith("one: not pushed (") and report[1] == "GEN-100: created from the backlog"
+
+
+def test_identical_lines_each_get_their_own_key(tmp_path, jira):
+    write(tmp_path, "- [ ] same", "- [ ] same")
+    tix.push_items(tmp_path, JIRA_CFG)
+    lines = tix.backlog_path(tmp_path).read_text().splitlines()
+    assert "- [ ] GEN-100 · same" in lines and "- [ ] GEN-101 · same" in lines
+
+
+@pytest.mark.parametrize("change", [{"mode": "mcp"}, {"project": None}, {"provider": "none"}])
+def test_push_needs_jira_rest_and_a_project(tmp_path, jira, change):
+    write(tmp_path, QUEUED)
+    cfg = {**JIRA_CFG, "connections": {"tickets": {**JIRA_CFG["connections"]["tickets"], **change}}}
+    with pytest.raises(FactoryError):
+        tix.push_items(tmp_path, cfg)
+    assert FakeJira.created == []
+
+
+def _scanner(root: Path, code: int) -> None:
+    scan = root / ".factory" / "security" / "secret_scan.sh"
+    scan.parent.mkdir(parents=True, exist_ok=True)
+    scan.write_text(f"#!/bin/sh\nexit {code}\n")
+    scan.chmod(0o755)
+
+
+@pytest.mark.parametrize("code", [1, 2])
+def test_a_secret_or_a_failed_scan_pushes_nothing(tmp_path, monkeypatch, code):
+    FakeJira.created = []
+    monkeypatch.setattr(tix, "Jira", FakeJira)
+    _scanner(tmp_path, code)
+    path = write(tmp_path, "- [ ] uses token ghp_abc")
+    before = path.read_bytes()
+    with pytest.raises(FactoryError, match="nothing was pushed"):
+        tix.push_items(tmp_path, JIRA_CFG)
+    assert FakeJira.created == [] and path.read_bytes() == before
+
+
+def test_push_without_the_secret_scanner_fails_closed(tmp_path, monkeypatch):
+    FakeJira.created = []
+    monkeypatch.setattr(tix, "Jira", FakeJira)
+    write(tmp_path, QUEUED)
+    with pytest.raises(FactoryError, match=r"secret_scan\.sh"):
+        tix.push_items(tmp_path, JIRA_CFG)
+    assert FakeJira.created == []
+
+
+def test_a_clean_scan_lets_the_push_through(tmp_path, monkeypatch):
+    FakeJira.created, FakeJira.issues, FakeJira.fail, FakeJira.on_create = [], [], set(), None
+    monkeypatch.setattr(tix, "Jira", FakeJira)
+    _scanner(tmp_path, 0)
+    write(tmp_path, QUEUED)
+    assert tix.push_items(tmp_path, JIRA_CFG) == ["GEN-100: created from the backlog"]
+
+
+def test_jira_create_posts_the_issue_and_returns_its_key(monkeypatch):
+    calls = []
+    monkeypatch.setattr(tix.Jira, "_request", lambda self, method, path, body=None, query=None:
+                        calls.append((method, path, body)) or {"key": "GEN-9"})
+    assert tix.Jira({"site": "https://x.atlassian.net"}).create("GEN", "Do it", "Task", ["factory"]) == "GEN-9"
+    assert calls == [("POST", "/rest/api/3/issue", {"fields": {"project": {"key": "GEN"}, "summary": "Do it",
+                                                               "issuetype": {"name": "Task"}, "labels": ["factory"]}})]
+    monkeypatch.setattr(tix.Jira, "_request", lambda self, method, path, body=None, query=None: {})
+    with pytest.raises(FactoryError, match="no key"):
+        tix.Jira({"site": "https://x.atlassian.net"}).create("GEN", "Do it", "Task", [])

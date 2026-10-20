@@ -533,3 +533,54 @@ def test_board_has_no_token(studio):
 
 def test_rendered_board_matches_the_template():
     assert REPO_DASHBOARD.read_text() == DASHBOARD.read_text()
+
+
+def _set_tickets(repo: Path, **tickets) -> None:
+    p = Project(repo)
+    data = p.raw()
+    data.setdefault("connections", {})["tickets"] = {"provider": "jira", "site": "https://x.atlassian.net", **tickets}
+    p.yaml_path.write_text(yaml.safe_dump(data, sort_keys=False))
+
+
+def test_backlog_reports_the_jira_connection(studio):
+    port, token, repo = studio
+    assert call(port, "GET", "/api/backlog", token=token)[1]["jira"] == {"connected": False, "push": False, "project": None}
+    _set_tickets(repo, project="GEN")
+    assert call(port, "GET", "/api/backlog", token=token)[1]["jira"] == {"connected": True, "push": True, "project": "GEN"}
+    _set_tickets(repo, project="GEN", mode="mcp")
+    assert call(port, "GET", "/api/backlog", token=token)[1]["jira"]["push"] is False
+
+
+def test_backlog_sync_needs_jira(studio):
+    port, token, _ = studio
+    status, r, _ = call(port, "POST", "/api/backlog/sync", token=token, body={})
+    assert status == 409 and "not connected" in r["error"]
+
+
+@pytest.mark.parametrize(("tickets", "argv"), [({"project": "GEN"}, ["sync", "--push", "--json"]),
+                                               ({"project": "GEN", "mode": "mcp"}, ["sync", "--json"])])
+def test_backlog_sync_runs_the_cli_and_returns_the_report(studio, monkeypatch, tickets, argv):
+    port, token, repo = studio
+    _set_tickets(repo, **tickets)
+    _backlog(repo, "- [ ] GEN-100 · one")
+    seen = []
+    monkeypatch.setattr(studio_server, "_cli", lambda root, args, env=None, timeout=0:
+                        seen.append(args) or {"ok": True, "data": {"report": ["GEN-100: created from the backlog"]}})
+    status, r, _ = call(port, "POST", "/api/backlog/sync", token=token, body={})
+    assert status == 200 and seen == [argv]
+    assert r["report"] == ["GEN-100: created from the backlog"]
+    assert [it["key"] for it in r["items"]] == ["GEN-100"]
+
+
+def test_backlog_sync_reports_a_cli_failure(studio, monkeypatch):
+    port, token, repo = studio
+    _set_tickets(repo, project="GEN")
+    monkeypatch.setattr(studio_server, "_cli", lambda root, args, env=None, timeout=0:
+                        {"ok": False, "error": "factory: secret in a backlog item: nothing was pushed to Jira"})
+    status, r, _ = call(port, "POST", "/api/backlog/sync", token=token, body={})
+    assert status == 502 and "nothing was pushed" in r["error"]
+
+
+def test_backlog_sync_needs_the_token(studio):
+    port, _, _ = studio
+    assert call(port, "POST", "/api/backlog/sync", body={})[0] in (401, 403)

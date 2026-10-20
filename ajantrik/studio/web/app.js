@@ -521,7 +521,8 @@ const BACKLOG_INTERACTIVE = 'The runtime is interactive Claude Code. Pick claude
 
 function backlogState() {
   if (!S.backlog || S.backlog.pid !== S.pid) {
-    S.backlog = { pid: S.pid, items: null, headless: false, error: null, loading: false, sel: new Set(),
+    S.backlog = { pid: S.pid, items: null, headless: false, jira: { connected: false, push: false, project: null },
+      report: null, error: null, loading: false, sel: new Set(),
       edit: null, editLine: '', draft: { text: '', key: '', base: '' },
       editDraft: { text: '', key: '', base: '', state: 'queued' }, busy: false }
   }
@@ -536,6 +537,7 @@ async function loadBacklog() {
     const r = await api('GET', 'backlog')
     B.items = r.items
     B.headless = r.headless
+    B.jira = r.jira || { connected: false, push: false, project: null }
     B.error = null
     B.sel = new Set()
     const open = B.edit === null ? null : B.items.find((it) => it.index === B.edit)
@@ -555,7 +557,8 @@ async function backlogCall(method, path, body, done) {
     const r = await api(method, path, body)
     B.items = r.items
     B.sel = new Set()
-    if (done) done()
+    B.report = null
+    if (done) done(r)
   } catch (err) {
     toast(err.message, true)
     if (err.status === 409) await loadBacklog()
@@ -641,16 +644,30 @@ function renderBacklog() {
     if (reload) await loadBacklog()
     else if (S.tab === 'backlog') render()
   } }, 'Start job')
+  // Two-way: queued items without a ticket become Jira issues (rest mode only), then new tickets come in.
+  const sync = B.jira.connected ? h('button', { type: 'button', disabled: B.busy, onclick: () => {
+    const fresh = B.items.filter((it) => it.state === 'queued' && !it.key).length
+    const ask = B.jira.push && fresh
+      ? `Create ${fresh} Jira issue(s) in ${B.jira.project} for the queued items without a ticket, then pull new tickets from Jira?`
+      : 'Pull new tickets from Jira into the backlog?'
+    if (!confirm(ask)) return
+    backlogCall('POST', 'backlog/sync', {}, (r) => { B.report = r.report })
+  } }, B.busy ? 'Working…' : 'Sync with Jira') : null
   return section('Backlog',
     B.error ? h('div', { class: 'msg error' }, `Could not refresh the backlog: ${B.error} `, retry) : null,
     h('p', { class: 'help' }, 'One item per line in .factory/backlog.md. Tick queued items and press Start job: they become one job, their requests joined with "; ". They must share one ticket and one base branch. Editing a blocked item drops its reason.'),
+    B.jira.connected ? h('p', { class: 'help' }, B.jira.push
+      ? `Sync with Jira creates an issue in ${B.jira.project} for each queued item without a ticket and writes its key into the line, then pulls new tickets from Jira.`
+      : 'Sync with Jira pulls new tickets only: creating issues needs the rest mode and a project under Connections.') : null,
     B.headless ? null : h('p', { class: 'msg info' }, BACKLOG_INTERACTIVE),
+    B.report ? h('div', { class: 'msg info' }, h('b', {}, 'Sync: '),
+      B.report.length ? h('ul', {}, B.report.map((ln) => h('li', {}, ln))) : 'nothing new.') : null,
     add,
     B.items.length ? h('table', { class: 'jobtable backlog' },
       h('thead', {}, h('tr', {}, ['', 'State', 'Ticket', 'Base', 'Request', ''].map((t) => h('th', {}, t)))),
       h('tbody', {}, B.items.map((it) => (it.index === B.edit ? editRow(it) : viewRow(it)))))
       : h('p', { class: 'help' }, 'No backlog items yet.'),
-    h('div', { class: 'row end' }, start))
+    h('div', { class: 'row end' }, sync, start))
 }
 
 // ---- Loop designer: a free-form graph of stages ---------------------------------------------------
@@ -1432,25 +1449,58 @@ function metricEditor(path) {
 }
 
 // ---- Connections ---------------------------------------------------------------------------------
+// ---- Connection checks ----------------------------------------------------------------------------
+// The last `factory doctor --only <x>` result per project stays on screen as a badge. git and tickets
+// check themselves when the Connections tab opens and again after each save; the runtime probe only
+// runs when asked (it may call a paid API).
+const CONN_LABELS = { checking: 'Checking…', ok: 'Connected', error: 'Not connected' }
+
+function connStatuses() {
+  if (!S.conn || S.conn.pid !== S.pid) S.conn = { pid: S.pid, results: {} }
+  return S.conn
+}
+
+async function checkConnection(only) {
+  const box = connStatuses()
+  const tab = S.tab
+  box.results[only] = { state: 'checking', rows: [], error: null }
+  render()
+  let st
+  try {
+    const r = await api('POST', 'doctor', { only })
+    const rows = Array.isArray(r.data) ? r.data : []
+    st = { state: rows.length && rows.every((x) => x.ok) ? 'ok' : 'error', rows, error: rows.length ? null : (r.error || 'No result') }
+  } catch (e) { st = { state: 'error', rows: [], error: e.message } }
+  box.results[only] = st
+  if (S.conn === box && S.tab === tab) render()
+}
+
+function autoCheck(only) {
+  const box = connStatuses()
+  if (box.results[only] || !$('save').disabled) return  // the check reads the saved config
+  box.results[only] = { state: 'checking', rows: [], error: null }
+  setTimeout(() => checkConnection(only))  // not from inside the render that called us
+}
+
 function doctorButton(only, label) {
-  const out = h('div', { class: 'doctor', 'aria-live': 'polite' })
-  const btn = h('button', { type: 'button', onclick: async () => {
-    btn.disabled = true
-    out.replaceChildren(h('span', { class: 'help' }, S.dirtyWarn ? '' : 'Checking (uses the saved config)...'))
-    try {
-      const r = await api('POST', 'doctor', { only })
-      if (!r.ok && !r.data) { out.replaceChildren(h('div', { class: 'msg error' }, r.error || 'failed')); return }
-      const rows = Array.isArray(r.data) ? r.data : []
-      out.replaceChildren(...rows.map((x) => h('div', { class: `msg ${x.ok ? 'ok' : 'error'}` }, h('b', {}, (x.ok ? 'OK ' : 'Failed ') + x.name + ' '), x.detail || '')),
-        rows.length ? null : h('div', { class: 'msg warn' }, r.error || 'No result'))
-    } catch (e) { out.replaceChildren(h('div', { class: 'msg error' }, e.message)) } finally { btn.disabled = false }
-  } }, label)
-  return h('div', { class: 'row' }, btn, h('span', { class: 'help' }, $('save').disabled ? '' : 'Save first: the test uses the saved config.'), out)
+  const st = connStatuses().results[only]
+  const badge = st ? h('span', { class: `cstate ${st.state}` },
+    only === 'runtime' && st.state !== 'checking' ? (st.state === 'ok' ? 'Working' : 'Failing') : CONN_LABELS[st.state]) : null
+  const btn = h('button', { type: 'button', disabled: !!st && st.state === 'checking', onclick: () => checkConnection(only) }, label)
+  const rows = st && st.state !== 'checking'
+    ? [...st.rows.map((x) => h('div', { class: `msg ${x.ok ? 'ok' : 'error'}` }, h('b', {}, (x.ok ? 'OK ' : 'Failed ') + x.name + ' '), x.detail || '')),
+        st.error ? h('div', { class: 'msg error' }, st.error) : null]
+    : []
+  return h('div', {},
+    h('div', { class: 'row' }, btn, badge, h('span', { class: 'help' }, $('save').disabled ? '' : 'Save first: the test uses the saved config.')),
+    h('div', { class: 'doctor', 'aria-live': 'polite' }, rows))
 }
 
 function renderConnections() {
   const gp = val(['connections', 'git', 'provider'])
   const tp = val(['connections', 'tickets', 'provider'])
+  if (gp && gp !== 'none') autoCheck('git')
+  if (tp === 'jira') autoCheck('tickets')
   const P = ['connections', 'tickets']
   return h('div', {},
     h('div', { class: 'msg info' }, 'Credentials are referenced, never stored: write env:JIRA_TOKEN (read from the environment) or keyring:factory/jira (read from the OS keyring). A value that is not a reference is rejected.'),
@@ -1479,6 +1529,7 @@ function renderConnections() {
         field('Epic with no branch', [...P, 'no_epic_branch'], { type: 'select', options: [['block', 'block the ticket'], ['fallback', 'fall back to the default base']] }),
         field('Write back', [...P, 'write_back'], { type: 'select', options: [['none', 'none'], ['draft', 'draft: write jira-comment.md for a human'], ['comment', 'comment on delivery'], ['transition', 'comment and transition on delivery']], rerender: true }),
         val([...P, 'write_back']) === 'transition' ? field('Transition to', [...P, 'transition_to'], { emptyNull: true, placeholder: 'In Review' }) : null,
+        val([...P, 'mode']) === 'rest' ? field('New issue type', [...P, 'create_type'], { placeholder: 'Task', help: 'Issue type for backlog items the Backlog tab\'s Sync with Jira creates.' }) : null,
         field('Ticket key pattern', [...P, 'key_pattern'])) : null,
       tp === 'jira' ? doctorButton('tickets', 'Test Jira connection') : null))
 }
@@ -1632,6 +1683,7 @@ async function save() {
       return
     }
     const cur = S.tab
+    S.conn = null  // the saved config changed: check the connections again
     await load()
     S.tab = cur
     S.issues = { errors: r.errors || [], warnings: r.warnings || [] }

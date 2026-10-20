@@ -263,9 +263,29 @@ class Studio:
             return tix.KEY_PATTERN, False
         return cfg.connections.tickets.key_pattern, cfg.runtime.kind != "claude-code"
 
+    def _jira(self) -> dict[str, Any]:
+        """Whether the Backlog tab offers Sync with Jira, and whether that sync can also push."""
+        cfg = self.project.load().cfg
+        t = cfg.connections.tickets if cfg else None
+        connected = bool(t and t.provider == "jira")
+        return {"connected": connected, "push": bool(connected and t and t.mode == "rest" and t.project),
+                "project": t.project if connected and t else None}
+
     def backlog(self) -> dict[str, Any]:
         pattern, headless = self._backlog_cfg()
-        return {"items": tix.list_items(self.root, pattern), "headless": headless}
+        return {"items": tix.list_items(self.root, pattern), "headless": headless, "jira": self._jira()}
+
+    def sync_backlog(self) -> dict[str, Any]:
+        """Two-way sync: push queued items without a ticket to Jira (rest mode only), then pull tickets in."""
+        jira = self._jira()
+        if not jira["connected"]:
+            raise ApiError(409, "Jira is not connected: set connections.tickets.provider to jira")
+        with self.lock:
+            r = _cli(self.root, ["sync", *(["--push"] if jira["push"] else []), "--json"], timeout=300)
+            if not r["ok"]:
+                raise ApiError(502, r.get("error") or "factory sync failed")
+            report = (r.get("data") or {}).get("report") or []
+            return {"report": report, "pushed": jira["push"], "items": tix.list_items(self.root, self._backlog_cfg()[0])}
 
     def _backlog_write(self, fn: Callable[..., list[dict[str, Any]]], *args: Any, **kw: Any) -> dict[str, Any]:
         with self.lock:
@@ -713,6 +733,8 @@ def make_handler(ws: Workspace, token: str, port: int) -> type[http.server.BaseH
                         return studio.add_backlog(body)
                     if method == "POST" and rest == ["run"]:
                         return studio.run_backlog(body)
+                    if method == "POST" and rest == ["sync"]:
+                        return studio.sync_backlog()
                     if len(rest) == 1 and method == "PUT":
                         return studio.update_backlog(rest[0], body)
                     if len(rest) == 1 and method == "DELETE":

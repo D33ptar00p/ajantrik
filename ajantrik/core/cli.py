@@ -14,7 +14,8 @@ the headless runtimes.
     deliver <job>     push / open the PR / put commits on the base, as configured
     abandon <job> [--force]
     status            one line per job, then the backlog
-    sync              fill .factory/backlog.md from the ticket system
+    sync [--push]     fill .factory/backlog.md from the ticket system; --push first creates issues
+                      for queued items without a ticket (a human's command, never an agent's)
     next              claim the first backlog item and create its job
     route <job>       which reviewers this diff needs, and why
     ticket <KEY>      read a ticket (REST)
@@ -65,7 +66,8 @@ def build_parser(prog: str = "factory.py") -> argparse.ArgumentParser:
     ab.add_argument("job")
     ab.add_argument("--force", action="store_true")
     sub.add_parser("status")
-    sub.add_parser("sync")
+    sy = sub.add_parser("sync")
+    sy.add_argument("--push", action="store_true", help="also create Jira issues for queued items without a ticket")
     nx = sub.add_parser("next")
     nx.add_argument("--skip-preflight", action="store_true")
     t = sub.add_parser("ticket")
@@ -106,7 +108,7 @@ def run_command(args: argparse.Namespace, root: Path) -> Any:
     if cmd == "status":
         return status(root)
     if cmd == "sync":
-        return {"report": tix.sync(root, eng.cfg, jobs.list_jobs(root))}
+        return {"report": tix.sync(root, eng.cfg, jobs.list_jobs(root), push=args.push)}
     if cmd == "next":
         item = tix.claim_next(root, eng.cfg)
         if not item:

@@ -1,8 +1,10 @@
 """Tickets: Jira over REST (email + API token references), and the backlog file.
 
 Reads (get, search) happen whenever a job starts or the backlog syncs. Writes (comment, transition)
-happen only from `factory deliver`, after the configured approval and the outgoing secret scan,
-and only when connections.tickets.write_back asks for them. Agents never write to Jira.
+happen from `factory deliver`, after the configured approval and the outgoing secret scan, and only
+when connections.tickets.write_back asks for them. The one other write is `factory sync --push`
+(the studio's Sync button): a human turning backlog items without a ticket into new issues, after
+the same secret scan. Agents never write to Jira; the guard blocks them from `sync --push`.
 """
 
 from __future__ import annotations
@@ -10,6 +12,7 @@ from __future__ import annotations
 import fcntl
 import json
 import re
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -84,6 +87,14 @@ class Jira:
             raise FactoryError(f"Jira {key}: no transition to {to!r} (have {[t['name'] for t in options]})")
         self._request("POST", f"/rest/api/3/issue/{key}/transitions", {"transition": {"id": match["id"]}})
 
+    def create(self, project: str, summary: str, issue_type: str, labels: list[str]) -> str:
+        data = self._request("POST", "/rest/api/3/issue",
+                             {"fields": {"project": {"key": project}, "summary": summary,
+                                         "issuetype": {"name": issue_type}, "labels": labels}})
+        if not data.get("key"):
+            raise FactoryError(f"Jira created an issue in {project} but returned no key")
+        return data["key"]
+
     def myself(self) -> str:
         return self._request("GET", "/rest/api/3/myself").get("displayName", "?")
 
@@ -131,8 +142,9 @@ def resolve_epic_base(repo: Path, conn: dict[str, Any], epic: str | None, defaul
 BACKLOG_HEADER = """# Backlog
 
 `factory sync` (or `/factory sync`) adds tickets here; you can also add lines by hand:
-`- [ ] base: <branch> · <request>`. `next` builds the first `- [ ]` item and checks it off with its
-job id. `- [!]` items are blocked until a human resolves them.
+`- [ ] base: <branch> · <request>`. `factory sync --push` (the studio's Sync with Jira) also turns
+queued lines without a ticket into new Jira issues. `next` builds the first `- [ ]` item and checks
+it off with its job id. `- [!]` items are blocked until a human resolves them.
 
 ## Queue
 
@@ -155,12 +167,85 @@ def parse_item(rest: str, key_pattern: str) -> dict[str, Any]:
     return item
 
 
-def sync(root: Path, cfg: dict[str, Any], jobs: list[dict[str, Any]]) -> list[str]:
+def sync(root: Path, cfg: dict[str, Any], jobs: list[dict[str, Any]], push: bool = False) -> list[str]:
+    """Pull the JQL's tickets into the backlog. With push, first create issues for the queued items
+    that have no ticket, so the pull already knows their keys and does not add them twice."""
     conn = (cfg.get("connections") or {}).get("tickets") or {}
     if conn.get("provider") != "jira":
         raise FactoryError("sync needs connections.tickets.provider: jira")
     if not conn.get("jql"):
         raise FactoryError("connections.tickets needs a project or a jql")
+    pushed = push_items(root, cfg) if push else []
+    return pushed + _pull(root, cfg, conn, jobs)
+
+
+def _secret_scan(root: Path, texts: list[str]) -> None:
+    """The outgoing summaries go through the same scan as a PR body. Fails closed."""
+    scan = root / ".factory" / "security" / "secret_scan.sh"
+    if not scan.is_file():
+        raise FactoryError("no .factory/security/secret_scan.sh: render the factory before pushing to Jira")
+    report = root / ".factory" / "jobs" / "secrets-backlog-push.json"
+    report.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        f = Path(tmp) / "backlog-push.txt"
+        f.write_text("".join(t + "\n" for t in texts))
+        r = run([str(scan), str(report), "--file", str(f)], check=False, timeout=120)
+    if r.returncode == 1:
+        raise FactoryError(f"secret in a backlog item: nothing was pushed to Jira (see {report.relative_to(root)})")
+    if r.returncode != 0:
+        raise FactoryError(f"the secret scan failed ({r.returncode}): nothing was pushed to Jira")
+
+
+def _set_key(root: Path, line: str, new: str) -> bool:
+    """Replace the first line that still reads `line` with `new`. False when it changed or went away."""
+    found = []
+
+    def edit(lines: list[str]) -> list[str]:
+        for pos, raw in enumerate(lines):
+            if _body(raw) == line:
+                lines[pos] = new + raw[len(line):]
+                found.append(pos)
+                break
+        return lines
+
+    try:
+        _rewrite(root, edit)
+    except BacklogConflict:
+        return False
+    return bool(found)
+
+
+def push_items(root: Path, cfg: dict[str, Any]) -> list[str]:
+    """Create a Jira issue for every queued item without a ticket and write its key into the line."""
+    conn = (cfg.get("connections") or {}).get("tickets") or {}
+    if conn.get("provider") != "jira":
+        raise FactoryError("pushing to Jira needs connections.tickets.provider: jira")
+    if conn.get("mode", "rest") != "rest":
+        raise FactoryError("pushing to Jira needs connections.tickets.mode: rest")
+    if not conn.get("project"):
+        raise FactoryError("pushing to Jira needs connections.tickets.project")
+    todo = [it for it in list_items(root, conn.get("key_pattern", KEY_PATTERN))
+            if it["state"] == "queued" and not it["key"]]
+    if not todo:
+        return []
+    _secret_scan(root, [it["text"] for it in todo])
+    jira = Jira(conn)
+    labels = [conn["label"]] if conn.get("label") else []
+    report = []
+    for it in todo:
+        try:
+            key = jira.create(conn["project"], it["text"], conn.get("create_type") or "Task", labels)
+        except FactoryError as e:
+            report.append(f"{it['text']}: not pushed ({e})")
+            continue
+        if _set_key(root, it["line"], _format("queued", it["text"], key, it["base"])):
+            report.append(f"{key}: created from the backlog")
+        else:
+            report.append(f"{key}: created, but the backlog line changed: add the key by hand")
+    return report
+
+
+def _pull(root: Path, cfg: dict[str, Any], conn: dict[str, Any], jobs: list[dict[str, Any]]) -> list[str]:
     jira = Jira(conn)
     path = backlog_path(root)
     text = path.read_text() if path.is_file() else BACKLOG_HEADER
