@@ -270,7 +270,7 @@ def _validate(text: str, key: str | None, base: str | None, key_pattern: str) ->
         raise FactoryError("backlog text cannot contain ' · '")
     if key and not re.fullmatch(key_pattern, key):
         raise FactoryError(f"ticket key {key!r} does not match {key_pattern}")
-    if base and not re.fullmatch(r"[\w./-]+", base):
+    if base and (base.startswith("-") or ".." in base or not re.fullmatch(r"[\w./-]+", base)):
         raise FactoryError(f"base {base!r} is not a branch name")
     return text, key or None, base or None
 

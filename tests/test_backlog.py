@@ -172,6 +172,7 @@ BAD = [
     {"text": ""}, {"text": "   "}, {"text": "two\nlines"}, {"text": "two\rlines"}, {"text": "a · b"},
     {"text": "ok", "key": "bad key"}, {"text": "ok", "key": "gen-1"}, {"text": "ok", "key": "GEN-1 extra"},
     {"text": "ok", "base": "a b"}, {"text": "ok", "base": "a\nb"}, {"text": "ok", "key": "GEN-1\n"},
+    {"text": "ok", "base": "-v"}, {"text": "ok", "base": "--all"}, {"text": "ok", "base": "a..b"},
 ]
 
 
