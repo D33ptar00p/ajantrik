@@ -168,7 +168,15 @@ def build_parser() -> argparse.ArgumentParser:
     nx = sub.add_parser("next", help="claim the first backlog item and run it (headless) or just create it")
     nx.add_argument("--wait", action="store_true")
     nx.add_argument("--create-only", action="store_true")
+    nx.add_argument("--items", type=_indices, help="0-based backlog item indices, e.g. 0,2")
     return ap
+
+
+def _indices(s: str) -> list[int]:
+    parts = s.split(",")
+    if not all(p.isascii() and p.isdigit() for p in parts):
+        raise argparse.ArgumentTypeError(f"{s!r}: expected comma-separated item numbers like 0,2")
+    return [int(p) for p in parts]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -257,6 +265,19 @@ def dispatch(args: argparse.Namespace) -> Any:
         from ajantrik.core.connections import tickets as tix
 
         runner = _runner(args)
+        if args.items is not None:
+            conn = (runner.engine.cfg.get("connections") or {}).get("tickets") or {}
+            kp = conn.get("key_pattern") or tix.KEY_PATTERN
+            claim = tix.claim_items(runner.project.root, args.items, kp)
+            try:
+                job = runner.engine.new_job(claim["request"], claim["key"], claim["base"])
+            except Exception:
+                tix.release_items(runner.project.root, claim["items"])
+                raise
+            for it in claim["items"]:
+                tix.mark_claimed(runner.project.root, it["claimed"], job["id"])
+            job = asyncio.run(runner.drive(job["id"]))
+            return job if args.json else None
         item = tix.claim_next(runner.project.root, runner.engine.cfg)
         if not item:
             return {"claimed": None, "note": "nothing queued"}

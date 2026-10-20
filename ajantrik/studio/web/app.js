@@ -74,7 +74,11 @@ async function api(method, path, body) {
   const res = await fetch(url, opts)
   let data = null
   try { data = await res.json() } catch { data = null }
-  if (!res.ok) throw new Error((data && data.error) || `${method} ${path}: HTTP ${res.status}`)
+  if (!res.ok) {
+    const err = new Error((data && data.error) || `${method} ${path}: HTTP ${res.status}`)
+    err.status = res.status
+    throw err
+  }
   return data
 }
 
@@ -304,6 +308,7 @@ function markdown(src) {
 const ICONS = {
   projects: ['M3 3h7v7H3z', 'M14 3h7v7h-7z', 'M3 14h7v7H3z', 'M14 14h7v7h-7z'],
   board: ['M3 4h5v16H3z', 'M10 4h5v10h-5z', 'M17 4h4v7h-4z'],
+  backlog: ['M8 6h13', 'M8 12h13', 'M8 18h13', 'M3 6h.01', 'M3 12h.01', 'M3 18h.01'],
   loop: ['M21 12a9 9 0 1 1-2.64-6.36', 'M21 3v6h-6'],
   agents: ['M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z', 'M4 21v-1a7 7 0 0 1 16 0v1'],
   skills: ['M4 19.5A2.5 2.5 0 0 1 6.5 17H20', 'M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z'],
@@ -332,6 +337,7 @@ function icon(name) {
 // [key, label, render, short rail label]
 const TABS = [
   ['board', 'Board', null, 'Board'],
+  ['backlog', 'Backlog', renderBacklog, 'Backlog'],
   ['loop', 'Loop', renderLoop, 'Loop'],
   ['agents', 'Agents', renderAgents, 'Agents'],
   ['skills', 'Skills', renderSkills, 'Skills'],
@@ -385,7 +391,7 @@ function render() {
   $('boardpane').hidden = !onBoard
   $('view').hidden = onBoard
   if (onBoard) { pollJobs(); return }
-  const [, label, fn] = TABS.find(([k]) => k === S.tab) || TABS[1]
+  const [, label, fn] = TABS.find(([k]) => k === S.tab) || TABS[2]
   $('view-title').textContent = label
   const view = $('view')
   const scroll = S.lastTab === S.tab ? view.scrollTop : 0
@@ -506,6 +512,145 @@ function renderJobs(jobs) {
   dlg.replaceChildren(h('div', { class: 'dlg wide' }, head, h('table', { class: 'jobtable' },
     h('thead', {}, h('tr', {}, h('th', {}, 'Job'), h('th', {}, 'Stage'), h('th', {}, 'Note'), h('th', {}, ''))),
     h('tbody', {}, rows))))
+}
+
+// ---- Backlog: add, edit and delete items, and start one job from the queued items picked ---------
+// The list lives in .factory/backlog.md. The server identifies an item by its index plus the raw line the
+// page last saw, so a change made elsewhere comes back as a 409 and the list reloads.
+const BACKLOG_INTERACTIVE = 'The runtime is interactive Claude Code. Pick claude-cli, codex-cli or api under Runtime to start jobs from here.'
+
+function backlogState() {
+  if (!S.backlog || S.backlog.pid !== S.pid) {
+    S.backlog = { pid: S.pid, items: null, headless: false, error: null, loading: false, sel: new Set(),
+      edit: null, editLine: '', draft: { text: '', key: '', base: '' },
+      editDraft: { text: '', key: '', base: '', state: 'queued' }, busy: false }
+  }
+  return S.backlog
+}
+
+async function loadBacklog() {
+  const B = backlogState()
+  if (B.loading) return
+  B.loading = true
+  try {
+    const r = await api('GET', 'backlog')
+    B.items = r.items
+    B.headless = r.headless
+    B.error = null
+    B.sel = new Set()
+    const open = B.edit === null ? null : B.items.find((it) => it.index === B.edit)
+    if (!open || open.line !== B.editLine) B.edit = null
+  } catch (err) { B.error = err.message }
+  B.loading = false
+  if (S.tab === 'backlog') render()
+}
+
+// One write: the response replaces the list. A failure keeps the drafts; a 409 also reloads.
+async function backlogCall(method, path, body, done) {
+  const B = backlogState()
+  if (B.busy) return
+  B.busy = true
+  render()
+  try {
+    const r = await api(method, path, body)
+    B.items = r.items
+    B.sel = new Set()
+    if (done) done()
+  } catch (err) {
+    toast(err.message, true)
+    if (err.status === 409) await loadBacklog()
+  }
+  B.busy = false
+  if (S.tab === 'backlog') render()
+}
+
+function backlogInput(id, label, value, onInput, attrs) {
+  return h('div', { class: 'field' }, h('label', { for: id }, label),
+    h('input', { id, type: 'text', autocomplete: 'off', value, oninput: (e) => onInput(e.target.value), ...attrs }))
+}
+
+function renderBacklog() {
+  const B = backlogState()
+  if (!B.loading && ((B.items === null && !B.error) || S.lastTab !== 'backlog')) loadBacklog()
+  const retry = h('button', { type: 'button', class: 'small', onclick: () => { B.error = null; loadBacklog(); render() } }, 'Retry')
+  if (B.items === null) {
+    return section('Backlog', B.error
+      ? h('div', { class: 'msg error' }, `Could not load the backlog: ${B.error} `, retry)
+      : h('p', { class: 'help' }, 'Loading backlog…'))
+  }
+  const add = h('form', { onsubmit: (e) => {
+    e.preventDefault()
+    backlogCall('POST', 'backlog', { ...B.draft }, () => { B.draft = { text: '', key: '', base: '' } })
+  } },
+  h('div', { class: 'grid' },
+    backlogInput('bl-text', 'Request', B.draft.text, (v) => { B.draft.text = v }, { required: true, placeholder: 'What should the factory build?' }),
+    backlogInput('bl-key', 'Ticket (optional)', B.draft.key, (v) => { B.draft.key = v }, { placeholder: 'ABC-123' }),
+    backlogInput('bl-base', 'Base branch (optional)', B.draft.base, (v) => { B.draft.base = v }, { placeholder: val(['repo', 'default_base']) || 'main' })),
+  h('div', { class: 'row end' }, h('button', { type: 'submit', class: 'primary', disabled: B.busy }, 'Add item')))
+
+  const cell = (...kids) => h('td', {}, ...kids)
+  const viewRow = (it) => h('tr', {},
+    cell(h('input', { type: 'checkbox', 'aria-label': `Select item ${it.index + 1}`, checked: B.sel.has(it.index),
+      disabled: it.state !== 'queued' || B.busy, onchange: (e) => {
+        if (e.target.checked) B.sel.add(it.index)
+        else B.sel.delete(it.index)
+        render()
+      } })),
+    cell(h('span', { class: `bstate ${it.state}` }, it.state)),
+    cell(it.key || ''), cell(it.base || ''), cell(it.text),
+    h('td', { class: 'acts' },
+      it.state !== 'done' ? h('button', { type: 'button', class: 'small', disabled: B.busy, onclick: () => {
+        B.edit = it.index
+        B.editLine = it.line
+        B.editDraft = { text: it.text, key: it.key || '', base: it.base || '', state: it.state }
+        render()
+      } }, 'Edit') : null,
+      h('button', { type: 'button', class: 'small', disabled: B.busy, onclick: () => {
+        if (!confirm(`Delete this backlog item?\n\n${it.text}`)) return
+        backlogCall('DELETE', `backlog/${it.index}`, { line: it.line }, () => { B.edit = null })
+      } }, 'Delete')))
+  const save = (it) => backlogCall('PUT', `backlog/${it.index}`, { line: B.editLine, ...B.editDraft }, () => { B.edit = null })
+  const editRow = (it) => {
+    const d = B.editDraft
+    const box = (label, k) => h('input', { type: 'text', autocomplete: 'off', 'aria-label': label, value: d[k],
+      oninput: (e) => { d[k] = e.target.value }, onkeydown: (e) => { if (e.key === 'Enter') save(it) } })
+    return h('tr', {},
+      cell(),
+      cell(h('select', { 'aria-label': 'State', onchange: (e) => { d.state = e.target.value } },
+        ['queued', 'blocked'].map((s) => h('option', { value: s, selected: d.state === s }, s)))),
+      cell(box('Ticket', 'key')), cell(box('Base branch', 'base')), cell(box('Request', 'text')),
+      h('td', { class: 'acts' },
+        h('button', { type: 'button', class: 'small primary', disabled: B.busy, onclick: () => save(it) }, 'Save'),
+        h('button', { type: 'button', class: 'small', onclick: () => { B.edit = null; render() } }, 'Cancel')))
+  }
+  const picked = B.items.filter((it) => B.sel.has(it.index))
+  const start = h('button', { type: 'button', class: 'primary', disabled: !B.headless || !picked.length || B.busy, onclick: async () => {
+    if (B.busy) return
+    B.busy = true
+    render()
+    let reload = false
+    try {
+      const r = await api('POST', 'backlog/run', { items: picked.map(({ index, line }) => ({ index, line })) })
+      toast(`Started: log in ${r.log}`)
+      reload = true
+    } catch (err) {
+      toast(err.message, true)
+      reload = err.status === 409
+    }
+    B.busy = false
+    if (reload) await loadBacklog()
+    else if (S.tab === 'backlog') render()
+  } }, 'Start job')
+  return section('Backlog',
+    B.error ? h('div', { class: 'msg error' }, `Could not refresh the backlog: ${B.error} `, retry) : null,
+    h('p', { class: 'help' }, 'One item per line in .factory/backlog.md. Tick queued items and press Start job: they become one job, their requests joined with "; ". They must share one ticket and one base branch. Editing a blocked item drops its reason.'),
+    B.headless ? null : h('p', { class: 'msg info' }, BACKLOG_INTERACTIVE),
+    add,
+    B.items.length ? h('table', { class: 'jobtable backlog' },
+      h('thead', {}, h('tr', {}, ['', 'State', 'Ticket', 'Base', 'Request', ''].map((t) => h('th', {}, t)))),
+      h('tbody', {}, B.items.map((it) => (it.index === B.edit ? editRow(it) : viewRow(it)))))
+      : h('p', { class: 'help' }, 'No backlog items yet.'),
+    h('div', { class: 'row end' }, start))
 }
 
 // ---- Loop designer: a free-form graph of stages ---------------------------------------------------

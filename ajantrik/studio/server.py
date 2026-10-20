@@ -27,9 +27,11 @@ import threading
 import time
 import urllib.parse
 import webbrowser
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from ajantrik.core.connections import tickets as tix
 from ajantrik.core.util import FactoryError
 from ajantrik.kit import workspace
 from ajantrik.kit.project import AgentDef, Project, SkillDef, library_dir, list_presets
@@ -252,6 +254,79 @@ class Studio:
         if self._is_saved(loaded):
             out["render"] = self.render()
         return out
+
+    # ---- backlog --------------------------------------------------------------------------------
+    def _backlog_cfg(self) -> tuple[str, bool]:
+        """(key pattern, headless), read fresh every time: factory.yaml can change under a running studio."""
+        cfg = self.project.load().cfg
+        if cfg is None:
+            return tix.KEY_PATTERN, False
+        return cfg.connections.tickets.key_pattern, cfg.runtime.kind != "claude-code"
+
+    def backlog(self) -> dict[str, Any]:
+        pattern, headless = self._backlog_cfg()
+        return {"items": tix.list_items(self.root, pattern), "headless": headless}
+
+    def _backlog_write(self, fn: Callable[..., list[dict[str, Any]]], *args: Any, **kw: Any) -> dict[str, Any]:
+        with self.lock:
+            try:
+                return {"items": fn(self.root, *args, key_pattern=self._backlog_cfg()[0], **kw)}
+            except tix.BacklogConflict as e:
+                raise ApiError(409, str(e)) from e
+            except FactoryError as e:
+                raise ApiError(400, str(e)) from e
+
+    @staticmethod
+    def _index(raw: str) -> int:
+        if not (raw.isascii() and raw.isdigit()):
+            raise ApiError(400, "bad backlog index")
+        return int(raw)
+
+    @staticmethod
+    def _str(body: dict[str, Any], k: str) -> str | None:
+        v = body.get(k)
+        if v is not None and not isinstance(v, str):
+            raise ApiError(400, f"{k} must be a string")
+        return v
+
+    def _need(self, body: dict[str, Any], k: str) -> str:
+        v = self._str(body, k)
+        if v is None:
+            raise ApiError(400, f"{k} is required")
+        return v
+
+    def add_backlog(self, body: dict[str, Any]) -> dict[str, Any]:
+        return self._backlog_write(tix.add_item, self._need(body, "text"), key=self._str(body, "key"),
+                                   base=self._str(body, "base"))
+
+    def update_backlog(self, index: str, body: dict[str, Any]) -> dict[str, Any]:
+        i = self._index(index)
+        return self._backlog_write(tix.update_item, i, self._need(body, "line"), text=self._need(body, "text"),
+                                   key=self._str(body, "key"), base=self._str(body, "base"),
+                                   state=self._need(body, "state"))
+
+    def delete_backlog(self, index: str, body: dict[str, Any]) -> dict[str, Any]:
+        return self._backlog_write(tix.delete_item, self._index(index), self._need(body, "line"))
+
+    def run_backlog(self, body: dict[str, Any]) -> dict[str, Any]:
+        pattern, headless = self._backlog_cfg()
+        if not headless:
+            raise ApiError(409, "the runtime is interactive Claude Code: pick claude-cli, codex-cli or api "
+                                "under Runtime to start jobs from here")
+        raw = body.get("items")
+        if not isinstance(raw, list) or not all(
+                isinstance(it, dict) and type(it.get("index")) is int and isinstance(it.get("line"), str)
+                for it in raw):
+            raise ApiError(400, "items must be a list of {index, line}")
+        picks = [(it["index"], it["line"]) for it in raw]
+        with self.lock:
+            try:
+                result = tix.combine(tix.list_items(self.root, pattern), picks)
+            except tix.BacklogConflict as e:
+                raise ApiError(409, str(e)) from e
+            except FactoryError as e:
+                raise ApiError(400, str(e)) from e
+        return self._detached(["next", "--items", ",".join(str(it["index"]) for it in result["items"])])
 
     # ---- jobs -----------------------------------------------------------------------------------
     @staticmethod
@@ -603,10 +678,12 @@ def make_handler(ws: Workspace, token: str, port: int) -> type[http.server.BaseH
                 return studio.state()
             if method == "GET" and head == "jobs" and not rest:
                 return studio.jobs()
+            if method == "GET" and parts == ["backlog"]:
+                return studio.backlog()
             if method == "GET" and parts == ["render", "check"]:
                 return studio.render(check=True)
             if method in ("PUT", "POST", "DELETE"):
-                body = self._body() if method != "DELETE" else self._delete_check()
+                body = self._body() if method != "DELETE" or head == "backlog" else self._delete_check()
                 if method == "PUT" and parts == ["config"]:
                     return studio.save_config(body)
                 if method == "POST" and parts == ["yaml", "parse"]:
@@ -631,6 +708,15 @@ def make_handler(ws: Workspace, token: str, port: int) -> type[http.server.BaseH
                         return studio.save_skill(rest[0], body)
                     if len(rest) == 1 and method == "DELETE":
                         return studio.delete_skill(rest[0])
+                if head == "backlog":
+                    if method == "POST" and not rest:
+                        return studio.add_backlog(body)
+                    if method == "POST" and rest == ["run"]:
+                        return studio.run_backlog(body)
+                    if len(rest) == 1 and method == "PUT":
+                        return studio.update_backlog(rest[0], body)
+                    if len(rest) == 1 and method == "DELETE":
+                        return studio.delete_backlog(rest[0], body)
                 if head == "jobs" and method == "POST":
                     if not rest:
                         return studio.new_job(body)

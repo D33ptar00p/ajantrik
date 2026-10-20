@@ -13,6 +13,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -246,3 +247,185 @@ def mark_claimed(root: Path, line: str, job_id: str) -> None:
         f.seek(0)
         f.write(text)
         f.truncate()
+
+
+# ---- backlog editing (studio, `factory next --items`) -------------------------------------------------
+KEY_PATTERN = r"[A-Z][A-Z0-9]+-\d+"
+_LINE_BREAKS = re.compile(r"[\r\n\x0b\x0c\x1c-\x1e\x85\u2028\u2029]")
+_STATES = {" ": "queued", "!": "blocked", "x": "done"}
+
+
+class BacklogConflict(FactoryError):
+    """The item at an index is missing or is not the line the caller saw: someone else edited the file."""
+
+
+def _validate(text: str, key: str | None, base: str | None, key_pattern: str) -> tuple[str, str | None, str | None]:
+    key, base = key or "", base or ""
+    if any(_LINE_BREAKS.search(v) for v in (text, key, base)):
+        raise FactoryError("backlog fields must be a single line")
+    text, key, base = text.strip(), key.strip(), base.strip()
+    if not text:
+        raise FactoryError("backlog text is empty")
+    if " · " in text:
+        raise FactoryError("backlog text cannot contain ' · '")
+    if key and not re.fullmatch(key_pattern, key):
+        raise FactoryError(f"ticket key {key!r} does not match {key_pattern}")
+    if base and not re.fullmatch(r"[\w./-]+", base):
+        raise FactoryError(f"base {base!r} is not a branch name")
+    return text, key or None, base or None
+
+
+def _format(state: str, text: str, key: str | None, base: str | None) -> str:
+    parts = ([key] if key else []) + ([f"base: {base}"] if base else []) + [text]
+    return f"- [{'!' if state == 'blocked' else ' '}] " + " · ".join(parts)
+
+
+def _body(raw: str) -> str:
+    return (raw.splitlines() or [""])[0]
+
+
+def _items(text: str, key_pattern: str) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for line in text.splitlines():
+        m = ITEM.match(line)
+        if not m:
+            continue
+        item = parse_item(m.group("rest"), key_pattern)
+        state = _STATES[m.group("state")]
+        if state == "done" and " → " in item["text"]:
+            item["text"] = item["text"].rpartition(" → ")[0]
+        items.append({"index": len(items), "state": state, **item, "line": line})
+    return items
+
+
+def _rewrite(root: Path, edit: Callable[[list[str]], list[str]], create: bool = False) -> None:
+    path = backlog_path(root)
+    if not path.is_file():
+        if not create:
+            raise BacklogConflict("the backlog file is missing: reload the backlog")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    with path.open("r+", newline="") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        data = f.read()
+        if create and not data:
+            data = BACKLOG_HEADER
+        out = "".join(edit(data.splitlines(keepends=True)))  # edit raises before anything is written
+        f.seek(0)
+        f.write(out)
+        f.truncate()
+
+
+def _find(lines: list[str], index: int, expected: str) -> int:
+    n = -1
+    for pos, raw in enumerate(lines):
+        if ITEM.match(_body(raw)):
+            n += 1
+            if n == index:
+                if _body(raw) != expected:
+                    raise BacklogConflict("the backlog item changed: reload the backlog")
+                return pos
+    raise BacklogConflict("the backlog item is gone: reload the backlog")
+
+
+def list_items(root: Path, key_pattern: str = KEY_PATTERN) -> list[dict[str, Any]]:
+    path = backlog_path(root)
+    return _items(path.read_text(), key_pattern) if path.is_file() else []
+
+
+def add_item(root: Path, text: str, key: str | None = None, base: str | None = None,
+             key_pattern: str = KEY_PATTERN) -> list[dict[str, Any]]:
+    text, key, base = _validate(text, key, base, key_pattern)
+    line = _format("queued", text, key, base) + "\n"
+
+    def edit(lines: list[str]) -> list[str]:
+        if lines and not lines[-1].endswith(("\n", "\r")):
+            lines[-1] += "\n"
+        return [*lines, line]
+
+    _rewrite(root, edit, create=True)
+    return list_items(root, key_pattern)
+
+
+def update_item(root: Path, index: int, line: str, text: str, key: str | None = None, base: str | None = None,
+                state: str = "queued", key_pattern: str = KEY_PATTERN) -> list[dict[str, Any]]:
+    text, key, base = _validate(text, key, base, key_pattern)
+    if state not in ("queued", "blocked"):
+        raise FactoryError("state must be queued or blocked")
+
+    def edit(lines: list[str]) -> list[str]:
+        pos = _find(lines, index, line)
+        if lines[pos].startswith("- [x]"):
+            raise FactoryError("a done item cannot be edited, only deleted")
+        lines[pos] = _format(state, text, key, base) + lines[pos][len(_body(lines[pos])):]
+        return lines
+
+    _rewrite(root, edit)
+    return list_items(root, key_pattern)
+
+
+def delete_item(root: Path, index: int, line: str, key_pattern: str = KEY_PATTERN) -> list[dict[str, Any]]:
+    def edit(lines: list[str]) -> list[str]:
+        del lines[_find(lines, index, line)]
+        return lines
+
+    _rewrite(root, edit)
+    return list_items(root, key_pattern)
+
+
+def combine(items: list[dict[str, Any]], picks: list[tuple[int, str | None]]) -> dict[str, Any]:
+    """The rule for turning chosen queued items into one job. A None line skips the stale-line check."""
+    if not picks:
+        raise FactoryError("pick at least one backlog item")
+    indices = [i for i, _ in picks]
+    if len(set(indices)) != len(indices):
+        raise FactoryError("a backlog item was picked twice")
+    chosen = []
+    for index, line in sorted(picks, key=lambda p: p[0]):
+        if not 0 <= index < len(items) or (line is not None and items[index]["line"] != line):
+            raise BacklogConflict("the backlog changed: reload the backlog")
+        chosen.append(items[index])
+    if any(it["state"] != "queued" for it in chosen):
+        raise FactoryError("only queued items can start a job")
+    keys = {it["key"] for it in chosen if it["key"]}
+    bases = {it["base"] for it in chosen if it["base"]}
+    if len(keys) > 1:
+        raise FactoryError(f"the items have different tickets: {', '.join(sorted(keys))}")
+    if len(bases) > 1:
+        raise FactoryError(f"the items have different bases: {', '.join(sorted(bases))}")
+    return {"request": "; ".join(it["text"] for it in chosen), "key": next(iter(keys), None),
+            "base": next(iter(bases), None), "items": chosen}
+
+
+def claim_items(root: Path, indices: list[int], key_pattern: str = KEY_PATTERN) -> dict[str, Any]:
+    """Claim exactly these queued items under one lock: `- [x] ... → claimed`. A rule violation changes nothing."""
+    result: dict[str, Any] = {}
+
+    def edit(lines: list[str]) -> list[str]:
+        result.update(combine(_items("".join(lines), key_pattern), [(i, None) for i in indices]))
+        claimed = []
+        for it in result["items"]:
+            pos = _find(lines, it["index"], it["line"])
+            rest = ITEM.match(it["line"])
+            assert rest is not None
+            new = f"- [x] {rest.group('rest')} → claimed"
+            lines[pos] = new + lines[pos][len(it["line"]):]
+            claimed.append({**it, "claimed": new})
+        result["items"] = claimed
+        return lines
+
+    _rewrite(root, edit)
+    return result
+
+
+def release_items(root: Path, items: list[dict[str, Any]]) -> None:
+    """Put claimed items back the way `claim_items` found them."""
+    def edit(lines: list[str]) -> list[str]:
+        for it in items:
+            for pos, raw in enumerate(lines):
+                if _body(raw) == it["claimed"]:
+                    lines[pos] = it["line"] + raw[len(it["claimed"]):]
+                    break
+        return lines
+
+    _rewrite(root, edit)

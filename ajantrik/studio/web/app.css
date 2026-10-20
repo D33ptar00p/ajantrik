@@ -209,6 +209,15 @@ textarea.body { min-height: 420px; }
 .jobtable { width: 100%; border-collapse: collapse; margin-top: 10px; }
 .jobtable th, .jobtable td { text-align: left; padding: 6px 8px; border-top: 1px solid var(--line); vertical-align: top; }
 .jobtable .acts { white-space: nowrap; display: flex; gap: 6px; }
+.jobtable.backlog { table-layout: fixed; }
+.jobtable.backlog th:nth-child(1) { width: 34px; }
+.jobtable.backlog th:nth-child(2) { width: 84px; }
+.jobtable.backlog th:nth-child(6) { width: 150px; }
+.jobtable.backlog td { overflow-wrap: anywhere; }
+.jobtable.backlog td input[type="text"], .jobtable.backlog td select { width: 100%; }
+.bstate { font-size: 11.5px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--line); background: var(--soft); }
+.bstate.blocked { background: var(--warn-bg); color: var(--warn); border-color: var(--warn); }
+.bstate.done { color: var(--muted); }
 
 textarea.yaml { min-height: 60vh; }
 

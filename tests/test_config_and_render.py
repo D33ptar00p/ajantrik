@@ -331,7 +331,7 @@ def test_next_items_cli_claims_creates_and_drives_one_job(git_repo, factory, mon
     from ajantrik.editions.headless.runner import Runner
     from ajantrik.kit.cli import main
 
-    factory()
+    factory(runtime__kind="claude-cli")  # Runner refuses the interactive runtime
     path = _three_item_backlog(git_repo, "- [ ] t0", "- [ ] t1", "- [ ] t2")
     driven: list[str] = []
 
@@ -350,7 +350,7 @@ def test_next_items_cli_failure_exits_non_zero_and_restores_the_file(git_repo, f
     from ajantrik.editions.headless.runner import Runner
     from ajantrik.kit.cli import main
 
-    factory()
+    factory(runtime__kind="claude-cli")  # Runner refuses the interactive runtime
     path = _three_item_backlog(git_repo, "- [ ] base: no-such-branch · t0", "- [ ] t1", "- [x] t2 → 001-x")
     before = path.read_bytes()
 
