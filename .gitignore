@@ -8,4 +8,4 @@ dist/
 *.egg-info/
 
 # software factory runtime state
-.factory/jobs/
+.factory/
