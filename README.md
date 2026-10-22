@@ -20,10 +20,11 @@ One `factory.yaml` plus markdown agents and skills defines the whole factory:
 You edit all of it in a local web **studio** or by hand.
 
 ```
-Plan:      spec-writer → architect → ⏸ approve
-Build:     test-author → builder-main (more builders: a fan-out, they run in parallel)
-Review:    gate ⇉ reviewer-code ∥ reviewer-security ∥ … (the gate fans out to the reviewers)
-Integrate: integrator → deliver (none | push | pr | direct, optionally after ⏸ approval)
+Plan:       spec-writer → architect → ⏸ approve
+Build:      test-author → builder-main (more builders: a fan-out, they run in parallel)
+Guardrails: gate (secret scan, clean tree and the guardrails it picks)
+Review:     ⇉ reviewer-code ∥ reviewer-security ∥ … (the gate fans out to the reviewers)
+Integrate:  integrator → deliver (none | push | pr | direct, optionally after ⏸ approval)
 gate fail / review CHANGES → back to the builders, max N rounds, then needs-human
 ```
 
@@ -51,9 +52,15 @@ factory studio --no-browser         # don't open a browser; open the printed URL
 ```
 
 The studio listens on 127.0.0.1 only. Each start mints a new token, carried by the URL it prints
-(Ctrl+C stops it). Run inside a
-project repo, it opens that repo's factory. Run anywhere else, it lists every registered project
-(`factory projects add <path>`). For the jobs board alone, without the editor, run `.factory/ui.sh`.
+(Ctrl+C stops it). Run inside a project repo, it opens that repo's factory. Run anywhere else, or
+with `--all`, it opens the Projects page, listing every registered project (see [Projects](#projects)).
+For the jobs board alone, without the editor, run `.factory/ui.sh`.
+
+A project's tabs are Board, Backlog, Loop, Agents, Skills, Guardrails, Connections, Delivery,
+Runtime and Raw YAML. What the Board's actions do depends on the runtime. With a headless runtime
+(`claude-cli`, `codex-cli`, `api`) the Board can approve, continue and deliver jobs. With
+`claude-code` it copies the `/factory go|deliver|rework` command for you to run, because the
+interactive session is the orchestrator.
 
 Then run a job:
 
@@ -68,17 +75,44 @@ Jobs started in one runtime can be finished in another: they share `.factory/job
 The dashboard (`.factory/ui.sh`, or the studio's Board tab) shows every job's stage, gate and
 review results.
 
+### Commands
+
+```bash
+factory init [--preset NAME] [--name REPO] [--force]   # create .factory/config/ from a preset, then render
+factory presets                                        # list presets
+factory validate                                       # check the config (errors and warnings)
+factory render [--check]                               # write .claude/ and .factory/ from the config
+factory studio [--port N] [--no-browser] [--all]       # the web studio
+factory projects                                       # list projects
+factory projects add <path> [--runtime R] [--preset P] [--name N]   # register a repo, setting up its factory
+factory projects remove <id>                           # forget a project (its files stay)
+factory doctor [--only git|tickets|runtime]            # check connections and the runtime
+factory run "<request>" [--ticket K] [--base B] [--wait]   # headless: create a job and drive it
+factory go <job> [--wait]                              # headless: approve the waiting stage and continue
+factory resume <job> [--wait]                          # headless: continue a job
+factory next [--wait] [--create-only] [--items 0,2]    # claim backlog items and run them (see Backlog)
+factory new|step|advance|refresh|gate|approve|rework|deliver|abandon|status|sync|route|ticket
+```
+
+The last line is the job commands: they are the same as `python3 .factory/factory.py <cmd>`
+(`python3 .factory/factory.py --help` lists them). `--json` anywhere on the line prints
+machine-readable output, which the studio relies on. `--root <path>` points at a repo other than
+the current one. `--wait` waits at approvals instead of stopping.
+
 ## Layout: one config, several editions
 
 ```
 ajantrik/
-  kit/            the installed `factory` CLI: schema (factory.yaml), project files, render, doctor
+  kit/            the installed `factory` CLI: schema (factory.yaml), project files, render, doctor, projects
     templates/    the /factory orchestrator skill, dashboard, ui.sh
+    workspace.py  the projects registry ($AJANTRIK_HOME/projects.json)
   core/           the runtime-neutral engine, stdlib only; copied into each repo as .factory/lib/ajantrik_core
     engine.py     the loop as data: step / advance / gate / approve / rework / deliver
+    graph.py      the loop as a graph: next, fan-out groups, loop.start, and what an agent does (role)
     gate.py routing.py delivery.py jobs.py
     connections/  git_host (gh, glab, Bitbucket REST), tickets (Jira REST, backlog), secrets (env:/keyring:)
-    security/     guard.py (hooks + library), policy.py, secret_scan.sh: lifted from the Move factories
+    security/     guard.py (hooks + library), policy.py, secret_scan.sh: lifted from the Move factories;
+                  pii_scan.py, content_scan.py: the PII and topic/regex guardrails
   editions/
     claude_code/  edition 1: interactive Claude Code; render writes .claude/agents, skills, settings, /factory
     headless/     edition 2: `factory run` drives the loop through a backend
@@ -106,7 +140,8 @@ were edited by hand and removes files for agents you deleted.
 
 ## How the loop works
 
-The engine (`ajantrik/core/engine.py`) reads the stage list and answers one question: *what next?*
+The engine (`ajantrik/core/engine.py`) reads the stages as a graph (`ajantrik/core/graph.py`) and
+answers one question: *what next?*
 
 - `step <job>` returns one action: run these agents (in parallel or not, fresh or resumed), run the
   gate, wait for an approval, deliver, or stop.
@@ -133,15 +168,27 @@ configuration rather than prose. A loop has three kinds of block:
 The role comes from the agent: `builder-*` agents build, `reviewer-*` agents review, `integrator`
 integrates and every other agent writes a file. A block's `role` overrides that.
 
-Phases (`loop.phases`) are only board columns, in order: Plan, Build, Review and Integrate by default,
-and you can add your own. An agent block goes in any phase without changing what it does; a gate
-goes in Review unless you put it elsewhere; approvals have no phase. What runs in parallel comes
+Phases (`loop.phases`) are only board columns, in order: Plan, Build, Guardrails, Review and
+Integrate by default, and you can add your own. An agent block goes in any phase without changing
+what it does; a gate goes in Guardrails (else Review) unless you put it elsewhere; approvals have no
+phase. What runs in parallel comes
 from the arrows: a block whose success edge fans out (`next: [a, b]`, or a second arrow drawn in the
 studio) starts `a` and `b` at the same time as one step. Each branch is a single agent, and all
 branches must lead on to the same block (or the same fan-out), where the path joins again. Without a
 fan-out, blocks run one after the other. Delivery
 is not a block: after the last one the job is delivered by `delivery.mode` (`none`, `push`, `pr` or
 `direct` with `ff-only` or `squash`), optionally after an approval.
+
+The blocks form a graph:
+
+- Each block has an optional `next`: a block id, `end` (the job is ready), or a list of ids (a
+  fan-out, above).
+- Without `next` a block continues to the one after it in the list, so a plain ordered list works
+  as it always did.
+- `loop.start` is the first block; it defaults to the first in the list.
+- The run order is the path of `next` edges from `loop.start`. Blocks off that path never run.
+- Gates and reviewer agents also have an `on_fail` edge. It must point to an earlier block and
+  defaults to the nearest builder before it (below).
 
 ### Guardrails
 
@@ -172,6 +219,41 @@ the first gate or reviewer after a build; checks before any builder run in round
 Configs written before phases (`version: 1`, with `builders:` and `reviewers:` teams) still load:
 each builder becomes a build agent and each reviewer a review agent, failures go back to the first
 builder explicitly, and the next save writes version 2.
+
+## Projects
+
+A project is one git repository with its own factory. The registry only remembers where they are:
+`$AJANTRIK_HOME/projects.json` (default `~/.ajantrik`).
+
+```bash
+factory projects                          # list the registered repos
+factory projects add ~/code/my-repo       # register a repo; if it has no factory, sets one up from --preset and --runtime
+factory projects remove <id>              # forget a project: the repo and its .factory/ stay as they are
+```
+
+`factory studio` run outside a configured repo, or with `--all`, opens the Projects page.
+
+## Backlog
+
+`.factory/backlog.md` is the queue of work for `factory next`. Items go under `## Queue`; add them
+by hand or with `factory sync`:
+
+```
+- [ ] GEN-781 · base: feature/GEN-750_Projects · Add project rename      (ticket)
+- [ ] base: main · Escape plant names in tooltips                          (free text)
+- [!] GEN-795 · epic GEN-802 has no branch on origin · Actor profile export
+- [x] GEN-781 · base: ... · Add project rename → 004-GEN-781-project-rename
+```
+
+- `- [ ]` is queued: a ticket, or free text as `base: <branch> · <request>`.
+- `- [x]` is done, with `→ <job id>`.
+- `- [!]` is blocked until a human resolves it.
+- `factory sync` fills the file from the ticket system. `factory sync --push` first creates issues
+  for queued lines that have no ticket. It writes to the ticket system, so it is a human's command.
+- `factory next` claims the first `- [ ]` item and runs it headless. `--create-only` only creates
+  the job. `--items 0,2` picks items by their 0-based position instead.
+- The studio's Backlog tab shows the same file. When the runtime is headless, ticked queued items
+  can be started as one job there (they must share one ticket and one base branch).
 
 ## Security
 
