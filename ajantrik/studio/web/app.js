@@ -6,15 +6,36 @@
 const TOKEN = document.querySelector('meta[name="factory-token"]').content
 const TOOLS = ['Read', 'Grep', 'Glob', 'Bash', 'Edit', 'Write', 'WebFetch', 'WebSearch']
 const MODELS = ['', 'opus', 'sonnet', 'haiku']
-const STAGE_KINDS = ['agent', 'approval', 'builders', 'gate', 'reviewers', 'integrate', 'delivery']
+const STAGE_KINDS = ['agent', 'approval', 'gate']
 const KIND_HELP = {
-  agent: 'One agent writes one file in the job folder.',
-  approval: 'The job waits here until a human approves.',
-  builders: 'Every builder runs in parallel; gate and review findings come back here.',
-  gate: 'Deterministic checks (Gate tab). A failure uses up a round.',
-  reviewers: 'Always-on and routed reviewers run in parallel; CHANGES starts the next round.',
-  integrate: 'The integrator decides READY or ESCALATE and writes the PR text.',
-  delivery: 'Push, PR or direct to base, as the Delivery tab says. Must be last.',
+  agent: 'One agent. What it does comes from the agent (its role); its phase is only the board column it shows in.',
+  approval: 'The job waits here until a human approves; meanwhile it shows under Needs human on the board.',
+  gate: 'Runs the guardrails you pick (Guardrails tab): secret scan, clean tree and your own checks. On failure the job goes back along its failure edge, or to the nearest builder before it, and uses up a round.',
+}
+// Phases are only board columns (loop.phases, in order); a phase's colour comes from its place in the list.
+const PHASE_HUES = [210, 140, 28, 280, 350, 180, 55, 250, 100, 310]
+const ROLES = ['plain', 'builder', 'reviewer', 'integrator']
+const ROLE_HELP = {
+  plain: 'Writes one file in the job folder.',
+  builder: 'Owns code: implements its area, writes build-<id>.md, and gets gate and review findings back.',
+  reviewer: 'Reviews the branch every round (PASS or CHANGES). CHANGES goes back along its failure edge.',
+  integrator: 'Decides READY or ESCALATE before delivery and drafts the PR text. At most one.',
+}
+// Fields that belong to one role only; a role change drops the others (the server rejects them).
+const ROLE_FIELDS = {
+  plain: ['output', 'rerun_on_rework', 'read_builders'],
+  builder: ['area_globs', 'description'],
+  reviewer: ['chip', 'path_globs', 'exclude_globs', 'diff_patterns', 'scoped_patterns', 'metrics', 'builder', 'on_fail'],
+  integrator: ['output'],
+}
+// Mirrors graph.role_for_agent / role_of: a stage's `role`, else what its agent's name says.
+function roleForAgent(agent) {
+  for (const r of ['builder', 'reviewer', 'integrator']) if (agent === r || (agent || '').startsWith(`${r}-`)) return r
+  return 'plain'
+}
+function roleOf(s) {
+  if (s.kind !== 'agent') return ''
+  return s.role || roleForAgent(s.agent)
 }
 const REF = /^(env|keyring):[\w./-]+$/
 const NAME = /^[a-z0-9][a-z0-9_-]*$/
@@ -140,7 +161,8 @@ function markDirty() {
 // ---- form controls -------------------------------------------------------------------------------
 function field(label, path, opt = {}) {
   const id = nextId('f')
-  const cur = val(path)
+  // opt.cur overrides the read-through value (the loop inspector reads stages from the working copy)
+  const cur = 'cur' in opt ? opt.cur : val(path)
   let input
   const commit = (v) => {
     if (opt.validate) {
@@ -312,8 +334,7 @@ const ICONS = {
   loop: ['M21 12a9 9 0 1 1-2.64-6.36', 'M21 3v6h-6'],
   agents: ['M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z', 'M4 21v-1a7 7 0 0 1 16 0v1'],
   skills: ['M4 19.5A2.5 2.5 0 0 1 6.5 17H20', 'M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z'],
-  gate: ['M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z', 'M9 12l2 2 4-4'],
-  team: ['M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z', 'M2 21v-1a7 7 0 0 1 14 0v1', 'M16 3.13a4 4 0 0 1 0 7.75', 'M22 21v-1a7 7 0 0 0-4-6.3'],
+  guardrails: ['M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z', 'M9 12l2 2 4-4'],
   connections: ['M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71',
     'M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71'],
   delivery: ['M22 2L11 13', 'M22 2l-7 20-4-9-9-4 20-7z'],
@@ -341,8 +362,7 @@ const TABS = [
   ['loop', 'Loop', renderLoop, 'Loop'],
   ['agents', 'Agents', renderAgents, 'Agents'],
   ['skills', 'Skills', renderSkills, 'Skills'],
-  ['gate', 'Gate', renderGate, 'Gate'],
-  ['team', 'Builders and reviewers', renderTeam, 'Team'],
+  ['guardrails', 'Guardrails', renderGuardrails, 'Guards'],
   ['connections', 'Connections', renderConnections, 'Connect'],
   ['delivery', 'Delivery', renderDelivery, 'Deliver'],
   ['runtime', 'Runtime', renderRuntime, 'Runtime'],
@@ -480,7 +500,6 @@ function renderJobs(jobs) {
       h('p', { class: 'help' }, jobs.length ? `${jobs.length} jobs, none waiting on you.` : 'No jobs yet.')))
     return
   }
-  const deliveryStage = (val(['loop', 'stages']) || []).find((s) => s.kind === 'delivery')
   const act = (label, fn, primary) => h('button', { type: 'button', class: primary ? 'primary small' : 'small', onclick: async (e) => {
     e.target.disabled = true
     try { const r = await fn(); toast(r && r.error ? r.error : `${label}: done`, !!(r && r.error)) } catch (err) { toast(err.message, true) }
@@ -489,7 +508,7 @@ function renderJobs(jobs) {
   const rows = waiting.map((j) => {
     const stage = j.stage || ''
     const awaiting = stage.startsWith('awaiting-') ? stage.slice('awaiting-'.length) : null
-    const isDelivery = awaiting && deliveryStage && awaiting === deliveryStage.id
+    const isDelivery = stage === 'awaiting-deliver'  // delivery follows the last stage on its own
     const btns = []
     if (val(['runtime', 'kind']) === 'claude-code') {
       // The interactive session is the orchestrator: the slash command is the approval.
@@ -672,77 +691,157 @@ function renderBacklog() {
 
 // ---- Loop designer: a free-form graph of stages ---------------------------------------------------
 // Each stage is a node you can drag anywhere (its position is saved as `pos`). The solid edge out of
-// a node is its success edge (`next`); gate and reviewers also have a failure edge (`on_fail`) back
-// into the round loop. A job starts at the start node and follows success edges; nodes off that
+// a node is its success edge (`next`); gates and reviewer agents also have a failure edge (`on_fail`)
+// back into the round loop. A job starts at the start node and follows success edges; nodes off that
 // path never run. After every edit the list is re-sorted into run order and `next` is written only
-// where it differs from the list order, so the YAML stays as plain as the graph allows.
+// where it differs from the list order, so the YAML stays as plain as the graph allows. Agents and
+// gates sit in one of the four fixed phases (an agent's phase is also what it does); approvals have
+// none. Delivery is not a stage: it follows the last one on its own (Deliver tab).
 function stageLabel(s) { return s.title || s.id }
 const NODE_W = 184
 const NODE_H = 84
-const SINGLETON = new Set(['builders', 'gate', 'reviewers', 'integrate', 'delivery'])
-const KIND_LABEL = { agent: 'Agent', approval: 'Approval', builders: 'Builders', gate: 'Gate', reviewers: 'Reviewers', integrate: 'Integrate', delivery: 'Delivery' }
-
-function successorOf(stages, sid) {
-  const i = stages.findIndex((s) => s.id === sid)
-  if (i < 0) return null
-  const n = stages[i].next
-  if (n === 'end') return null
-  if (n) return n
-  return i + 1 < stages.length ? stages[i + 1].id : null
-}
-function runOrderOf(stages, start) {
-  const order = []
-  let cur = start || (stages[0] && stages[0].id)
-  while (cur && stages.some((s) => s.id === cur) && !order.includes(cur)) {
-    order.push(cur)
-    cur = successorOf(stages, cur)
+const KIND_LABEL = { agent: 'Agent', approval: 'Approval', gate: 'Guardrails' }
+const RESERVED_IDS = ['ready', 'needs-human', 'abandoned', 'delivered', 'end', 'deliver']
+const hasFail = (s) => s.kind === 'gate' || roleOf(s) === 'reviewer'
+const defaultAgent = (s) => ({ builder: `builder-${s.id}`, reviewer: `reviewer-${s.id}` })[roleOf(s)] || null
+// Where a failure goes when on_fail is unset: the nearest builder before the stage on the run path.
+function failTarget(stages, order, s) {
+  if (s.on_fail) return s.on_fail
+  const i = order.indexOf(s.id)
+  for (let j = i - 1; j >= 0; j--) {
+    const b = stages.find((x) => x.id === order[j])
+    if (b && roleOf(b) === 'builder') return b.id
   }
-  return order
+  return null
 }
+// The phase a stage shows in (schema.Loop): agents default to the first phase, guardrails blocks to guardrails, else review (or the
+// last phase), approvals have none.
+const phaseIds = () => (val(['loop', 'phases']) || []).map((p) => p.id)
+function phaseOf(s) {
+  if (s.kind === 'approval') return null
+  if (s.phase) return s.phase
+  const ids = phaseIds()
+  if (s.kind === 'gate') return ['guardrails', 'review'].find((p) => ids.includes(p)) || ids[ids.length - 1] || null
+  return ids[0] || null
+}
+const phaseHue = (pid) => { const i = phaseIds().indexOf(pid); return i < 0 ? null : PHASE_HUES[i % PHASE_HUES.length] }
+const phaseTitleOf = (name) => name.charAt(0).toUpperCase() + name.slice(1).replace(/-/g, ' ')
+
+// Success edges, mirroring core/graph.py. `next` is unset (the next stage in the list), `end`, one
+// stage id, or a list of ids: a fan-out whose stages run at the same time and join again after.
+function successorsOf(stages, sid) {
+  const i = stages.findIndex((s) => s.id === sid)
+  if (i < 0) return []
+  const n = stages[i].next
+  if (n === 'end') return []
+  if (Array.isArray(n)) return n.filter((x) => x !== 'end').map(String)
+  if (n) return [n]
+  return i + 1 < stages.length ? [stages[i + 1].id] : []
+}
+const asNext = (ids) => (ids.length > 1 ? [...ids] : ids[0] || 'end')
+const sameIds = (a, b) => a.length === b.length && a.every((x, i) => x === b[i])
+// graph.groups: the run path as steps (a fan-out is one step). The server rejects a broken path; here
+// the walk just stops where the rules break and says why in `.error`, so the designer still draws.
+function groupsOf(stages, start) {
+  const out = []
+  out.error = null
+  if (!stages.length) return out
+  const byId = Object.fromEntries(stages.map((s) => [s.id, s]))
+  const seen = new Set()
+  let cur = [start || stages[0].id]
+  while (cur.length) {
+    const bad = cur.find((id) => !byId[id] || seen.has(id))
+    if (bad) { out.error = byId[bad] ? `the success edges loop back to ${bad}` : `no stage ${bad}`; break }
+    cur.forEach((id) => seen.add(id))
+    out.push(cur)
+    if (cur.length > 1) {
+      const notAgent = cur.find((id) => byId[id].kind !== 'agent')
+      if (notAgent) { out.error = `${notAgent} is a parallel branch: only agents run in parallel`; break }
+      const joins = cur.map((id) => successorsOf(stages, id))
+      if (joins.some((j) => !sameIds(j, joins[0]))) { out.error = `parallel stages ${cur.join(', ')} must all lead to the same next stage`; break }
+      cur = joins[0]
+    } else cur = successorsOf(stages, cur[0])
+  }
+  return out
+}
+const runOrderOf = (stages, start) => groupsOf(stages, start).flat()
 const G = () => {
   const stages = list(['loop', 'stages'])
-  return { stages, order: runOrderOf(stages, val(['loop', 'start'])) }
+  const groups = groupsOf(stages, val(['loop', 'start']))
+  return { stages, groups, order: groups.flat() }
 }
-// Re-sort into run order, then drop `next` wherever the list order already says it.
+// Would these success edges loop? (Going back is what a failure edge is for.)
+function cyclic(succ) {
+  const state = {}
+  const visit = (id) => {
+    if (state[id] === 1) return true
+    if (state[id] === 2) return false
+    state[id] = 1
+    for (const n of succ[id] || []) if (visit(n)) return true
+    state[id] = 2
+    return false
+  }
+  return Object.keys(succ).some((id) => visit(id))
+}
+// Re-sort into run order, then drop `next` wherever the list order already says it. A fan-out always
+// keeps its list.
 function normalizeLoop() {
   const stages = list(['loop', 'stages'])
   const start = val(['loop', 'start'])
-  const succ = Object.fromEntries(stages.map((s) => [s.id, successorOf(stages, s.id)]))
+  const succ = Object.fromEntries(stages.map((s) => [s.id, successorsOf(stages, s.id)]))
   const order = runOrderOf(stages, start)
   const sorted = [...order.map((id) => stages.find((s) => s.id === id)), ...stages.filter((s) => !order.includes(s.id))]
   sorted.forEach((s, i) => {
     const implied = i + 1 < sorted.length ? sorted[i + 1].id : null
     const actual = succ[s.id]
-    if (actual === implied) delete s.next
-    else s.next = actual || 'end'
+    if (actual.length > 1) s.next = [...actual]
+    else if ((actual[0] || null) === implied) delete s.next
+    else s.next = actual[0] || 'end'
   })
   stages.splice(0, stages.length, ...sorted)
   if (S.cfg.loop) delete S.cfg.loop.start
   markDirty()
 }
-function setNext(stages, sid, target) {
-  // freeze every edge first: moving one node in the list must not re-route the others
-  const succ = Object.fromEntries(stages.map((s) => [s.id, successorOf(stages, s.id)]))
-  succ[sid] = target
-  for (const s of stages) s.next = succ[s.id] || 'end'
+// Write every stage's successors explicitly (so moving one in the list re-routes nothing), then tidy.
+function applySucc(stages, succ) {
+  for (const s of stages) s.next = asNext(succ[s.id] || [])
   normalizeLoop()
+}
+function setNext(stages, sid, targets) {
+  const succ = Object.fromEntries(stages.map((s) => [s.id, successorsOf(stages, s.id)]))
+  succ[sid] = targets || []
+  applySucc(stages, succ)
 }
 
 // Positions: a stage's saved `pos`, else an automatic one kept out of the config (so just looking
 // at the loop never makes it "unsaved"). Moving any node saves every position.
+// One column per phase, plan → build → review → integrate; an approval gets a column of its own just
+// after the phase of the stage before it on the run path; the branches of a fan-out share the column
+// of the first. Stages in one column stack top to bottom.
 function autoLayout(all) {
   const D = S.designer
-  const { stages, order } = G()
-  const perRow = Math.max(3, Math.floor(((D.width || 1100) - 80) / (NODE_W + 64)))
+  const { stages, order, groups } = G()
   const place = (s, x, y) => { if (all) s.pos = { x, y }; else D.auto[s.id] = { x, y } }
-  order.forEach((id, i) => {
-    const s = stages.find((x) => x.id === id)
+  const slot = {}
+  let last = -1
+  for (const g of groups) {
+    const s = stages.find((x) => x.id === g[0])
+    if (s.kind === 'approval') { slot[s.id] = `${last + 0.5}`; continue }
+    last = Math.max(0, phaseIds().indexOf(phaseOf(s)))
+    for (const id of g) slot[id] = `${last}`
+  }
+  const slots = [...new Set(Object.values(slot))].sort((a, b) => a - b)
+  const cols = slots.map(() => [])
+  for (const id of order) cols[slots.indexOf(slot[id])].push(stages.find((x) => x.id === id))
+  let deepest = 0
+  cols.forEach((col, c) => col.forEach((s, r) => {
+    deepest = Math.max(deepest, r + 1)
     if (!all && s.pos) return
-    place(s, 40 + (i % perRow) * (NODE_W + 64), 50 + Math.floor(i / perRow) * (NODE_H + 120))
-  })
+    place(s, 40 + c * (NODE_W + 110), 50 + r * (NODE_H + 48))  // wide gaps: failure edges run in them
+  }))
   stages.filter((s) => !order.includes(s.id)).forEach((s, j) => {
     if (!all && s.pos) return
-    place(s, 40 + j * (NODE_W + 40), 50 + Math.ceil(order.length / perRow) * (NODE_H + 120) + 20)
+    place(s, 40 + j * (NODE_W + 40), 50 + deepest * (NODE_H + 48) + 120)
   })
 }
 const posOf = (s) => s.pos || S.designer.auto[s.id]
@@ -751,16 +850,12 @@ function savePositions() {
 }
 
 function nodeSummary(s) {
-  if (s.kind === 'agent' || s.kind === 'integrate') return s.agent || '(no agent)'
-  if (s.kind === 'builders') return (val(['builders']) || []).map((b) => b.id).join(' ∥ ') || '(no builders)'
-  if (s.kind === 'reviewers') {
-    const rv = val(['reviewers']) || {}
-    const n = (rv.always || []).length + (rv.routed || []).length
-    return `${n} reviewer${n === 1 ? '' : 's'}, routed`
+  if (s.kind === 'agent') return `${roleOf(s)} · ${s.agent || defaultAgent(s) || '(no agent)'}`
+  if (s.kind === 'gate') {
+    const n = (s.steps || []).length
+    return n ? `${n} guardrail${n === 1 ? '' : 's'}` : 'all guardrails'
   }
-  if (s.kind === 'gate') { const n = (val(['gate', 'steps']) || []).length; return `${n} step${n === 1 ? '' : 's'} + secret scan` }
-  if (s.kind === 'approval') return 'waits for a human'
-  if (s.kind === 'delivery') return `${val(['delivery', 'mode']) || 'none'}${val(['delivery', 'require_approval']) ? ', after approval' : ''}`
+  if (s.kind === 'approval') return s.note || 'waits for a human'
   return ''
 }
 
@@ -809,16 +904,33 @@ function renderLoop() {
     return g
   }
   const drawEdges = () => {
-    const { stages: st, order } = G()
+    const { stages: st, order, groups } = G()
     const byId = Object.fromEntries(st.map((s) => [s.id, s]))
     edgeLayer.replaceChildren()
-    const builders = st.find((s) => s.kind === 'builders')
+    // A dashed bracket around the stages of each fan-out: they run at the same time.
+    for (const g of groups.filter((x) => x.length > 1)) {
+      const ps = g.map((id) => byId[id] && posOf(byId[id])).filter(Boolean)
+      if (!ps.length) continue
+      const x = Math.min(...ps.map((p) => p.x)) - 10, y = Math.min(...ps.map((p) => p.y)) - 18
+      const r = document.createElementNS(svgNS, 'rect')
+      for (const [k, v] of Object.entries({ x, y, rx: 12, class: 'pgroup',
+        width: Math.max(...ps.map((p) => p.x)) + NODE_W + 10 - x, height: Math.max(...ps.map((p) => p.y)) + NODE_H + 10 - y })) r.setAttribute(k, v)
+      const t = document.createElementNS(svgNS, 'title')
+      t.textContent = `${g.join(' ∥ ')} run at the same time`
+      r.appendChild(t)
+      edgeLayer.appendChild(r)
+    }
+    // Failure edges run below every node, each in a lane of its own, so none hides behind a node.
+    const placed = st.filter((s) => posOf(s))
+    const floor = placed.length ? Math.max(...placed.map((s) => posOf(s).y + NODE_H)) : 0
+    let lane = 0
     for (const s of st) {
       const a = posOf(s)
       if (!a) continue
-      const n = successorOf(st, s.id)
       const sel = D.sel && D.sel.type === 'edge' && D.sel.from === s.id
-      if (n && byId[n] && posOf(byId[n])) {
+      const outs = successorsOf(st, s.id)
+      for (const n of outs) {
+        if (!byId[n] || !posOf(byId[n])) continue
         const b = posOf(byId[n])
         const x1 = a.x + NODE_W, y1 = a.y + NODE_H / 2, x2 = b.x, y2 = b.y + NODE_H / 2
         let d
@@ -831,24 +943,29 @@ function renderLoop() {
           const r = 30
           d = `M${x1},${y1} C${x1 + r * 1.6},${y1} ${x1 + r * 1.6},${ym} ${x1},${ym} L${x2},${ym} C${x2 - r * 1.6},${ym} ${x2 - r * 1.6},${y2} ${x2},${y2}`
         }
-        edgeLayer.appendChild(path(d, `next${sel && D.sel.kind === 'next' ? ' sel' : ''}${order.includes(s.id) ? '' : ' off'}`,
-          `${s.id} → ${n} (success). Click to select, Delete to remove.`, () => { D.sel = { type: 'edge', kind: 'next', from: s.id }; refresh() }))
+        edgeLayer.appendChild(path(d, `next${sel && D.sel.kind === 'next' && D.sel.to === n ? ' sel' : ''}${order.includes(s.id) ? '' : ' off'}`,
+          `${s.id} → ${n} (success${outs.length > 1 ? ', one branch of a fan-out' : ''}). Click to select, Delete to remove.`,
+          () => { D.sel = { type: 'edge', kind: 'next', from: s.id, to: n }; refresh() }))
       }
-      if (s.kind === 'gate' || s.kind === 'reviewers') {
-        const target = s.on_fail || (builders && builders.id)
+      if (hasFail(s)) {
+        const target = failTarget(st, order, s)
         const t = target && byId[target]
         if (t && posOf(t)) {
-          const x1 = a.x + NODE_W / 2, y1 = a.y + NODE_H, x2 = posOf(t).x + NODE_W / 2, y2 = posOf(t).y + NODE_H
-          const low = Math.max(y1, y2) + 70
-          const d = `M${x1},${y1} C${x1},${low} ${x2},${low} ${x2},${y2}`
+          // down out of the fail port, along the gap left of the node, below everything in a lane of its
+          // own, up the gap left of the target and into its bottom
+          const tp = posOf(t), k = lane % 4
+          const x1 = a.x + NODE_W / 2, y1 = a.y + NODE_H, x2 = tp.x + NODE_W / 2, y2 = tp.y + NODE_H
+          const gx = a.x - 14 - k * 6, tx = tp.x - 14 - k * 6, low = floor + 34 + lane * 22
+          const d = `M${x1},${y1} V${y1 + 12} H${gx} V${low} H${tx} V${y2 + 14} H${x2} V${y2}`
+          lane++
           edgeLayer.appendChild(path(d, `fail${s.on_fail ? '' : ' implicit'}${sel && D.sel.kind === 'fail' ? ' sel' : ''}`,
-            `${s.id} → ${target} on failure / CHANGES${s.on_fail ? '' : ' (default: the builders stage)'}`,
+            `${s.id} → ${target} on failure / CHANGES${s.on_fail ? '' : ' (default: the nearest builder before it)'}. Click to select.`,
             () => { D.sel = { type: 'edge', kind: 'fail', from: s.id }; refresh() }))
           const lbl = document.createElementNS(svgNS, 'text')
-          lbl.setAttribute('x', x1 + 10)
-          lbl.setAttribute('y', y1 + 24)
+          lbl.setAttribute('x', Math.min(gx, tx) + 10)
+          lbl.setAttribute('y', low - 5)
           lbl.setAttribute('class', 'elabel')
-          lbl.textContent = s.kind === 'gate' ? '↺ fail' : '↺ CHANGES'
+          lbl.textContent = `${s.kind === 'gate' ? '↺ fail' : '↺ CHANGES'}: ${s.id} → ${target}${s.on_fail ? '' : ' (default)'}`
           edgeLayer.appendChild(lbl)
         }
       }
@@ -879,57 +996,82 @@ function renderLoop() {
       canvas.removeEventListener('pointermove', move)
       D.temp = null
       const target = nodeAt(ev.clientX, ev.clientY)
-      if (target && target !== s.id) connect(s.id, target, fail)
+      if (target && target !== s.id) connect(s.id, target, fail, ev.shiftKey || ev.altKey)
       else drawEdges()
     }
     canvas.addEventListener('pointermove', move)
     canvas.addEventListener('pointerup', up, { once: true })
   }
-  const connect = (from, to, fail) => {
+  // A success edge from a stage that already has one adds a branch (a fan-out); with Shift or Alt held
+  // it replaces the stage's edges instead.
+  const connect = (from, to, fail, replace = false) => {
     const { stages: st, order } = G()
     const src = st.find((x) => x.id === from)
     if (fail) {
       if (!order.includes(from) || !order.includes(to) || order.indexOf(to) >= order.indexOf(from)) {
-        toast('A failure edge goes back to an earlier stage on the path (usually the builders).', true)
+        toast('A failure edge goes back to an earlier stage on the path (usually a builder).', true)
         drawEdges()
         return
       }
       src.on_fail = to
       markDirty()
     } else {
-      // would the new edge make the success path loop?
-      let cur = to
-      const seen = new Set()
-      while (cur && !seen.has(cur)) {
-        if (cur === from) { toast('That would make the success path loop. Going back is what a failure edge (from gate or reviewers) is for.', true); drawEdges(); return }
-        seen.add(cur)
-        cur = successorOf(st, cur)
+      const byId = Object.fromEntries(st.map((x) => [x.id, x]))
+      const succ = Object.fromEntries(st.map((x) => [x.id, successorsOf(st, x.id)]))
+      const cur = succ[from]
+      let note = ''
+      if (replace || !cur.length) succ[from] = [to]
+      else {
+        if (cur.includes(to)) { toast(`${from} already leads to ${to}.`); drawEdges(); return }
+        const branches = [...cur, to]
+        const notAgent = branches.find((id) => byId[id].kind !== 'agent')
+        if (notAgent) {
+          toast(`Only agents run in parallel, and ${notAgent} is not one. Hold Shift while dropping to re-point the edge instead.`, true)
+          drawEdges()
+          return
+        }
+        // the branches must join again: the new one leads where its siblings lead
+        const join = succ[cur[0]]
+        if (!sameIds(succ[to], join)) {
+          succ[to] = [...join]
+          note = ` ${to} now leads to ${join.join(' ∥ ') || 'the end'}, like ${cur.join(' and ')}, so the branches join again.`
+        }
+        succ[from] = branches
       }
-      if (src.kind === 'delivery') { toast('Delivery is the last stage: nothing can follow it.', true); drawEdges(); return }
-      setNext(st, from, to)
+      if (cyclic(succ)) { toast('That would make the success path loop. Going back is what a failure edge (from a guardrails block or reviewer) is for.', true); drawEdges(); return }
+      applySucc(st, succ)
+      if (succ[from].length > 1) toast(`${succ[from].join(' ∥ ')} now run at the same time.${note}`)
     }
-    D.sel = { type: 'edge', kind: fail ? 'fail' : 'next', from }
+    D.sel = { type: 'edge', kind: fail ? 'fail' : 'next', from, to }
     refresh()
   }
   const drawNodes = () => {
-    const { stages: st, order } = G()
+    const { stages: st, order, groups } = G()
+    const phases = val(['loop', 'phases']) || []
     const startId = order[0]
+    const groupOf = Object.fromEntries(groups.filter((g) => g.length > 1).flatMap((g) => g.map((id) => [id, g])))
     layer.replaceChildren(...st.map((s) => {
       const off = !order.includes(s.id)
       const sel = D.sel && D.sel.type === 'node' && D.sel.id === s.id
+      const pid = phaseOf(s)
+      const ph = pid && (phases.find((p) => p.id === pid) || { id: pid, title: pid })
+      const hue = pid ? phaseHue(pid) : null
       const el = h('div', {
-        class: `gnode k-${s.kind}${sel ? ' sel' : ''}${off ? ' off' : ''}`, tabindex: '0', role: 'button',
-        'data-id': s.id, 'aria-label': `${KIND_LABEL[s.kind]} stage ${stageLabel(s)}${off ? ', not connected' : ''}`,
-        style: `left:${posOf(s).x}px;top:${posOf(s).y}px;width:${NODE_W}px;height:${NODE_H}px`,
+        class: `gnode k-${s.kind}${s.kind === 'agent' ? ` r-${roleOf(s)}` : ''}${sel ? ' sel' : ''}${off ? ' off' : ''}`, tabindex: '0', role: 'button',
+        'data-id': s.id, 'aria-label': `${KIND_LABEL[s.kind] || s.kind} stage ${stageLabel(s)}${ph ? `, phase ${ph.title || ph.id}` : ''}${off ? ', not connected' : ''}`,
+        style: `left:${posOf(s).x}px;top:${posOf(s).y}px;width:${NODE_W}px;height:${NODE_H}px${hue === null ? '' : `;--ph:${hue}`}`,
       },
       s.id === startId ? h('span', { class: 'startpill' }, '▶ start') : null,
       off ? h('span', { class: 'offpill' }, 'not connected') : null,
-      h('div', { class: 'gk' }, KIND_LABEL[s.kind]),
+      h('span', { class: 'phpill', title: ph ? `Phase ${ph.id}` : 'Waiting jobs show under Needs human' },
+        ph ? ph.title || ph.id : 'needs human'),
+      h('div', { class: 'gk' }, KIND_LABEL[s.kind] || s.kind,
+        groupOf[s.id] ? h('span', { class: 'parbadge', title: `Runs at the same time as ${groupOf[s.id].filter((x) => x !== s.id).join(', ')}` }, ' ∥ parallel') : null),
       h('div', { class: 'gt' }, stageLabel(s)),
       h('div', { class: 'gs' }, nodeSummary(s)),
       h('span', { class: 'port in', title: 'Drop a connection here' }),
-      s.kind !== 'delivery' ? h('span', { class: 'port out', title: 'Drag to the next stage (success)' }) : null,
-      s.kind === 'gate' || s.kind === 'reviewers' ? h('span', { class: 'port failp', title: 'Drag to where a failure or CHANGES goes back to' }) : null)
+      h('span', { class: 'port out', title: 'Drag to the next stage (success)' }),
+      hasFail(s) ? h('span', { class: 'port failp', title: 'Drag to where a failure or CHANGES goes back to' }) : null)
       el.addEventListener('pointerdown', (e) => {
         if (e.button !== 0) return
         if (e.target.classList.contains('out')) return connectDrag(e, s, false)
@@ -972,9 +1114,18 @@ function renderLoop() {
   const renameStage = (oldId, newId) => {
     const st = list(['loop', 'stages'])
     for (const x of st) {
-      if (x.id === oldId) x.id = newId
+      if (x.id === oldId) {
+        // keep the agent file it used: a builder's or reviewer's default agent name follows the id
+        if (!x.agent && defaultAgent(x)) x.agent = defaultAgent(x)
+        x.id = newId
+      }
       if (x.next === oldId) x.next = newId
+      if (Array.isArray(x.next)) x.next = x.next.map((n) => (n === oldId ? newId : n))
       if (x.on_fail === oldId) x.on_fail = newId
+      if (x.builder === oldId) x.builder = newId
+    }
+    if ((val(['gate', 'steps']) || []).some((g) => g.builder === oldId)) {
+      for (const g of list(['gate', 'steps'])) if (g.builder === oldId) g.builder = newId
     }
     if (S.cfg.loop && S.cfg.loop.start === oldId) S.cfg.loop.start = newId
     D.sel = { type: 'node', id: newId }
@@ -982,80 +1133,235 @@ function renderLoop() {
   }
   const deleteStage = (sid) => {
     const st = list(['loop', 'stages'])
-    const succ = Object.fromEntries(st.map((x) => [x.id, successorOf(st, x.id)]))
+    const succ = Object.fromEntries(st.map((x) => [x.id, successorsOf(st, x.id)]))
     const through = succ[sid]
     for (const x of st) {
-      x.next = (succ[x.id] === sid ? through : succ[x.id]) || 'end'
+      const outs = succ[x.id]
+      // a branch of a fan-out just drops out of it; a single edge into it is re-routed past it
+      const nxt = !outs.includes(sid) ? outs : outs.length > 1 ? outs.filter((n) => n !== sid)
+        : through.filter((n) => n !== x.id)
+      x.next = asNext([...new Set(nxt)])
       if (x.on_fail === sid) delete x.on_fail
+      if (x.builder === sid) delete x.builder
+    }
+    if ((val(['gate', 'steps']) || []).some((g) => g.builder === sid)) {
+      for (const g of list(['gate', 'steps'])) if (g.builder === sid) delete g.builder
     }
     const order = runOrderOf(st, val(['loop', 'start']))
-    const newStart = order[0] === sid ? through : order[0]
+    const newStart = order[0] === sid ? through[0] : order[0]
     st.splice(st.findIndex((x) => x.id === sid), 1)
     if (newStart) { S.cfg.loop = S.cfg.loop || {}; S.cfg.loop.start = newStart }
     normalizeLoop()
     D.sel = null
     refresh()
   }
+  // Drop the fields the stage's role does not have; the server rejects them.
+  const stripForRole = (s) => {
+    const role = roleOf(s)
+    const keep = new Set(ROLE_FIELDS[role] || [])
+    for (const r of Object.keys(ROLE_FIELDS)) for (const f of ROLE_FIELDS[r]) if (!keep.has(f)) delete s[f]
+    if ((role === 'plain' || role === 'integrator') && !s.agent) {
+      const names = (S.server.agents || []).map((a) => a.name)
+      s.agent = role === 'integrator' && names.includes('integrator') ? 'integrator' : names[0] || ''
+    }
+    markDirty()
+  }
+  // 'auto': no `role` key, so the role follows the agent's name.
+  const setRole = (s, role) => {
+    if (role === 'auto') delete s.role
+    else s.role = role
+    stripForRole(s)
+  }
+  // Phases are board columns only: tags in board order, added by name, removable once nothing uses them.
+  const movePhase = (i, j) => {
+    const arr = list(['loop', 'phases'])
+    if (j < 0 || j >= arr.length) return
+    ;[arr[i], arr[j]] = [arr[j], arr[i]]
+    markDirty()
+    render()
+  }
+  const addPhase = (input) => {
+    const name = input.value.trim()
+    const id = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+    const fail = (msg) => { input.setCustomValidity(msg); input.reportValidity(); input.setCustomValidity('') }
+    if (!id) return fail('Type a name for the phase')
+    if (!/^[a-z]/.test(id)) return fail('A phase name starts with a letter')
+    if (phaseIds().includes(id)) return fail(`There is already a phase ${id}`)
+    list(['loop', 'phases']).push(name === phaseTitleOf(id) ? { id } : { id, title: name })
+    markDirty()
+    render()
+  }
+  const phasesEditor = () => {
+    const phases = val(['loop', 'phases']) || []
+    const { stages: st } = G()
+    const input = h('input', { type: 'text', placeholder: 'New phase, e.g. QA', 'aria-label': 'New phase name', autocomplete: 'off',
+      onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); addPhase(e.target) } } })
+    return h('div', { class: 'phases' },
+      h('h3', {}, 'Phases'),
+      h('p', { class: 'help' }, 'The board columns, in this order, followed by Done and Needs human. A phase is only where a stage shows on the board: what an agent does comes from the agent.'),
+      h('ul', { class: 'phtags' }, phases.map((p, i) => {
+        const users = st.filter((x) => phaseOf(x) === p.id).map((x) => x.id)
+        const why = phases.length === 1 ? 'The loop needs at least one phase' : users.length ? `In use by ${users.join(', ')}` : `Remove phase ${p.id}`
+        const btn = (label, text, disabled, fn, cls = '') => h('button', { type: 'button', class: `phbtn ${cls}`, title: label, 'aria-label': label, disabled, onclick: fn }, text)
+        return h('li', { class: 'phtag', style: `--ph:${phaseHue(p.id)}`, title: `${p.id}${users.length ? `: ${users.join(', ')}` : ''}` },
+          btn(`Move ${p.title || p.id} left`, '←', i === 0, () => movePhase(i, i - 1)),
+          h('span', { class: 'phdot', 'aria-hidden': 'true' }), h('span', { class: 'phname' }, p.title || p.id),
+          btn(`Move ${p.title || p.id} right`, '→', i === phases.length - 1, () => movePhase(i, i + 1)),
+          btn(why, '✕', phases.length === 1 || users.length > 0, () => { list(['loop', 'phases']).splice(i, 1); markDirty(); render() }, 'danger'))
+      })),
+      h('div', { class: 'row phadd' }, input, h('button', { type: 'button', class: 'small', onclick: () => addPhase(input) }, '+ Phase')))
+  }
   const renderInspector = () => {
-    const { stages: st, order } = G()
-    const agents = (S.server.agents || []).map((a) => a.name)
+    const { stages: st, order, groups } = G()
+    const phases = val(['loop', 'phases']) || []
     if (D.sel && D.sel.type === 'edge') {
       const s = st.find((x) => x.id === D.sel.from)
       if (!s) { D.sel = null; return renderInspector() }
       const isFail = D.sel.kind === 'fail'
-      const target = isFail ? (s.on_fail || '(the builders stage)') : (successorOf(st, s.id) || 'end')
-      inspector.replaceChildren(h('h3', {}, isFail ? 'Failure edge' : 'Success edge'),
+      const outs = successorsOf(st, s.id)
+      const to = D.sel.to && outs.includes(D.sel.to) ? D.sel.to : outs[0]
+      const target = isFail ? (failTarget(st, order, s) || '(a human)') : (to || 'end')
+      const fan = !isFail && outs.length > 1
+      inspector.replaceChildren(h('h3', {}, isFail ? 'Failure edge' : fan ? 'Success edge (fan-out branch)' : 'Success edge'),
         h('p', {}, h('code', {}, s.id), ' → ', h('code', {}, target)),
-        h('p', { class: 'help' }, isFail ? 'Where the job goes back to when the gate fails or a reviewer asks for CHANGES. Each pass uses a round.' : 'Where the job goes when this stage succeeds.'),
-        h('div', { class: 'row' }, h('button', { type: 'button', class: 'danger', onclick: () => {
-          if (isFail) { delete s.on_fail; markDirty() } else setNext(st, s.id, null)
+        h('p', { class: 'help' }, isFail ? 'Where the job goes back to when the gate fails or a reviewer asks for CHANGES. Each pass uses a round.'
+          : fan ? `${s.id} fans out: ${outs.join(' ∥ ')} run at the same time, then join again.` : 'Where the job goes when this stage succeeds.'),
+        h('div', { class: 'row' }, h('button', { type: 'button', class: 'danger', disabled: isFail && !s.on_fail, onclick: () => {
+          if (isFail) { delete s.on_fail; markDirty() } else setNext(st, s.id, outs.filter((n) => n !== to))
           D.sel = null
           refresh()
-        } }, isFail ? 'Reset to the builders stage' : 'Remove edge (stage ends the job)')))
+        } }, isFail ? 'Reset to the nearest builder' : fan ? 'Remove this branch' : 'Remove edge (stage ends the job)')))
       return
     }
     const s = D.sel && D.sel.type === 'node' && st.find((x) => x.id === D.sel.id)
     if (!s) {
+      const mode = val(['delivery', 'mode']) || 'none'
+      const tail = mode === 'none' ? '' : ` → deliver (${mode}${val(['delivery', 'require_approval']) ? ', after approval' : ''})`
       inspector.replaceChildren(h('h3', {}, 'Loop'),
         grid(field('Max rounds', ['loop', 'max_rounds'], { type: 'number', min: 1, max: 10, help: 'A round is one gate run plus, if it passes, one review.' })),
         h('div', { class: 'legend' },
           h('p', {}, h('b', {}, 'Move'), ': drag a node. ', h('b', {}, 'Pan'), ': drag the background. ', h('b', {}, 'Zoom'), ': scroll.'),
-          h('p', {}, h('span', { class: 'lg next' }), 'Success edge: drag from the right port to another node.'),
-          h('p', {}, h('span', { class: 'lg fail' }), 'Failure edge (gate, reviewers): drag from the bottom port back to an earlier node.'),
+          h('p', {}, h('span', { class: 'lg next' }), 'Success edge: drag from the right port to another node. From a stage that already has one, this adds a branch: the branches run at the same time and must lead to the same next stage. Hold Shift (or Alt) while dropping to re-point the edge instead.'),
+          h('p', {}, h('span', { class: 'lg fail' }), 'Failure edge (guardrails blocks, reviewer agents): drag from the bottom port back to an earlier node.'),
           h('p', {}, 'Select a node or edge to edit it; Delete removes it.'),
-          h('p', { class: 'help' }, `Run order: ${order.join(' → ') || '(empty)'}`)))
+          h('p', { class: 'help' }, `Run order: ${groups.map((g) => (g.length > 1 ? `(${g.join(' ∥ ')})` : g[0])).join(' → ') || '(empty)'}${tail}`),
+          groups.error ? h('p', { class: 'msg error' }, `The path stops here: ${groups.error}.`) : '',
+          h('p', { class: 'help' }, mode === 'none'
+            ? 'Delivery is off (Deliver tab): a job ends ready after the last stage.'
+            : 'Delivery is not a block: it follows the last stage on its own. Set it up in the Deliver tab.')),
+        phasesEditor())
       return
     }
     const i = st.indexOf(s)
     const P = ['loop', 'stages', i]
     const idInput = h('input', { type: 'text', value: s.id, spellcheck: 'false', onchange: (e) => {
       const v = e.target.value.trim()
-      if (!/^[a-z][a-z0-9-]*$/.test(v) || ['ready', 'needs-human', 'abandoned', 'delivered', 'end'].includes(v)) { e.target.setCustomValidity('Lower-case kebab, not a reserved job state'); e.target.reportValidity(); return }
+      if (!/^[a-z][a-z0-9-]*$/.test(v) || RESERVED_IDS.includes(v)) { e.target.setCustomValidity('Lower-case kebab, not a reserved job state'); e.target.reportValidity(); return }
       if (st.some((x) => x !== s && x.id === v)) { e.target.setCustomValidity('Another stage has this id'); e.target.reportValidity(); return }
       renameStage(s.id, v)
       refresh()
     } })
+    // Stage fields read the working copy (`cur`): the server's effective config lags behind role and id changes.
     const fields = [
       h('div', { class: 'field' }, h('label', {}, 'Id'), idInput, h('div', { class: 'help' }, 'Also the job stage name.')),
-      field('Title', [...P, 'title'], { rerender: true }),
+      field('Title', [...P, 'title'], { cur: s.title || '', rerender: true }),
     ]
-    if (s.kind === 'agent' || s.kind === 'integrate') {
-      fields.push(field('Agent', [...P, 'agent'], { type: 'select', options: ['', ...new Set([...agents, s.agent || ''])].filter((x, k, a) => a.indexOf(x) === k), rerender: true }))
-      fields.push(field('Output file', [...P, 'output'], { placeholder: s.kind === 'integrate' ? 'decision.md' : `${s.id}.md`, emptyNull: true }))
+    const role = roleOf(s)
+    const pid = phaseOf(s)
+    if (s.kind !== 'approval') {
+      const sid = nextId('phase')
+      fields.push(h('div', { class: 'field' }, h('label', { for: sid }, 'Phase'),
+        h('select', { id: sid, onchange: (e) => { s.phase = e.target.value; markDirty(); refresh() } },
+          phases.map((p) => h('option', { value: p.id, selected: p.id === pid }, p.title || p.id))),
+        h('div', { class: 'help' }, 'The board column it shows in; it does not change what the stage does.')))
     }
     if (s.kind === 'agent') {
-      fields.push(field('Re-run on rework', [...P, 'rerun_on_rework'], { type: 'select', options: ['never', 'scope', 'always'] }))
-      fields.push(field('Read the Builders: line', [...P, 'read_builders'], { type: 'bool', help: 'The output names which builders the job needs.' }))
+      const rid = nextId('role'), aid = nextId('agent')
+      const others = st.some((x) => x !== s && roleOf(x) === 'integrator')
+      const auto = roleForAgent(s.agent || '')
+      fields.push(h('div', { class: 'field' }, h('label', { for: aid }, 'Agent'),
+        h('select', { id: aid, onchange: (e) => {
+          if (e.target.value) s.agent = e.target.value
+          else delete s.agent
+          stripForRole(s)  // with Acts as Auto, the role follows the new name
+          refresh()
+        } }, agentOptions(defaultAgent(s), s.agent).map(([v, l]) => h('option', { value: v, selected: (s.agent || '') === v }, l)))))
+      fields.push(h('div', { class: 'field' }, h('label', { for: rid }, 'Acts as'),
+        h('select', { id: rid, onchange: (e) => { setRole(s, e.target.value); refresh() } },
+          h('option', { value: 'auto', selected: !s.role, disabled: auto === 'integrator' && others && roleOf(s) !== 'integrator' }, `Auto (from agent: ${auto})`),
+          ROLES.map((r) => h('option', { value: r, selected: s.role === r, disabled: r === 'integrator' && others }, r))),
+        h('div', { class: 'help' }, ROLE_HELP[role])))
+      if (role === 'plain' || role === 'integrator') {
+        fields.push(field('Output file', [...P, 'output'], { cur: s.output || '', placeholder: role === 'integrator' ? 'decision.md' : `${s.id}.md` }))
+      }
+      if (role === 'plain') {
+        fields.push(field('Re-run on rework', [...P, 'rerun_on_rework'], { type: 'select', cur: s.rerun_on_rework || 'never', options: ['never', 'scope', 'always'] }))
+        fields.push(field('Read the Builders: line', [...P, 'read_builders'], { type: 'bool', cur: !!s.read_builders, help: 'The output names which builders the job needs.' }))
+      }
+      if (role === 'builder') {
+        fields.push(field('Description', [...P, 'description'], { type: 'textarea', rows: 2, cur: s.description || '', help: 'What it builds, shown to the architect.' }))
+        fields.push(field('Area (globs)', [...P, 'area_globs'], { type: 'list', cur: s.area_globs || [], help: 'Paths it owns; findings there come back to it.' }))
+      }
+      if (role === 'reviewer') {
+        const bids = st.filter((x) => roleOf(x) === 'builder').map((x) => x.id)
+        fields.push(field('Chip', [...P, 'chip'], { cur: s.chip || '', placeholder: s.id, help: 'Dashboard label' }))
+        fields.push(field('Findings go to builder', [...P, 'builder'], { type: 'select', cur: s.builder || '', parse: (v) => v || undefined,
+          options: [['', '(every builder)'], ...bids.map((x) => [x, x]), ...(s.builder && !bids.includes(s.builder) ? [[s.builder, `${s.builder} (missing)`]] : [])] }))
+        fields.push(h('p', { class: 'help' }, 'Routing: with none of the triggers below it always runs; with any, it runs only when one matches.'))
+        fields.push(field('Changed path globs', [...P, 'path_globs'], { type: 'list', cur: s.path_globs || [] }))
+        fields.push(field('Excluded path globs', [...P, 'exclude_globs'], { type: 'list', cur: s.exclude_globs || [], help: 'Changed paths that never trigger it.' }))
+        fields.push(field('Added-line patterns (regex)', [...P, 'diff_patterns'], { type: 'list', cur: s.diff_patterns || [] }))
+        fields.push(scopedEditor([...P, 'scoped_patterns'], s.scoped_patterns || []))
+        fields.push(metricEditor([...P, 'metrics'], s.metrics || []))
+      }
+      fields.push(field('Extra prompt', [...P, 'prompt'], { type: 'textarea', rows: 3, cur: s.prompt || '', placeholder: 'Appended to the agent prompt for this stage' }))
     }
-    if (s.kind === 'approval') fields.push(field('Card note', [...P, 'note'], { placeholder: 'approve the spec and design' }))
-    if (['agent', 'integrate', 'builders', 'reviewers'].includes(s.kind)) {
-      fields.push(field('Extra prompt', [...P, 'prompt'], { type: 'textarea', rows: 3, placeholder: 'Appended to the agent prompt for this stage' }))
+    if (s.kind === 'gate') {
+      // Ticked guardrails go into `steps`; Run all is an empty list (every guardrail, built-ins included).
+      const choices = guardrailChoices()
+      const chosen = s.steps || []
+      const all = !chosen.length
+      const aid = nextId('gall')
+      fields.push(h('fieldset', { class: 'field wide guardpick' }, h('legend', {}, 'Guardrails'),
+        h('div', { class: 'chk' }, h('input', { type: 'checkbox', id: aid, checked: all, onchange: (e) => {
+          if (e.target.checked) delete s.steps
+          else s.steps = choices.filter((c) => !c.off).map((c) => c.key)
+          markDirty()
+          refresh()
+        } }), h('label', { for: aid }, h('b', {}, 'Run all'), ' (and any added later)')),
+        choices.map((c) => {
+          const cid = nextId('gs')
+          return h('div', { class: 'grow' },
+            h('div', { class: 'chk' }, h('input', { type: 'checkbox', id: cid, checked: all ? !c.off : chosen.includes(c.key), disabled: all || (c.off && !chosen.includes(c.key)),
+              onchange: (e) => {
+                const keys = choices.map((x) => x.key)
+                const nxt = e.target.checked ? keys.filter((x) => x === c.key || chosen.includes(x)) : chosen.filter((x) => x !== c.key)
+                if (!nxt.length) { toast('A guardrails block runs at least one guardrail; tick Run all to run every one.', true); e.target.checked = true; return }
+                s.steps = nxt
+                markDirty()
+                refresh()
+              } }),
+            h('label', { for: cid }, c.title, ' ', h('code', {}, c.key), c.off ? h('span', { class: 'help inline' }, ` (${c.why})`) : null)))
+        }),
+        h('div', { class: 'help' }, all ? 'Runs every guardrail that is on.' : `Runs ${chosen.length} of ${choices.length} guardrails.`)))
     }
-    const where = { builders: 'Builders are set under Team.', reviewers: 'Reviewers and their routing are under Team.', gate: 'Gate steps are under Gate.', delivery: 'The delivery mode is under Deliver.' }[s.kind]
+    if (s.kind === 'approval') {
+      fields.push(field('Card note', [...P, 'note'], { cur: s.note || '', placeholder: 'approve the spec and design' }))
+      fields.push(h('p', { class: 'help' }, 'Approvals have no phase: while a job waits here it shows under Needs human on the board, with this note.'))
+    }
+    let failNote = null
+    if (hasFail(s)) {
+      const ft = failTarget(st, order, s)
+      failNote = s.on_fail ? `On failure it goes back to ${s.on_fail}.`
+        : ft ? `On failure it goes back to ${ft}, the nearest builder before it. Drag from the bottom port to change.`
+          : 'No builder before it: failure stops for a human.'
+    }
+    const where = s.kind === 'gate' ? 'What each guardrail runs is edited in the Guardrails tab.' : null
     inspector.replaceChildren(
-      h('h3', {}, h('span', { class: `kpill k-${s.kind}` }, KIND_LABEL[s.kind]), ' ', stageLabel(s)),
+      h('h3', {}, h('span', { class: `kpill k-${s.kind}` }, s.kind === 'agent' && role !== 'plain' ? role : KIND_LABEL[s.kind] || s.kind), ' ', stageLabel(s)),
       h('p', { class: 'help' }, KIND_HELP[s.kind] || ''),
-      where ? h('p', { class: 'help' }, where) : null,
+      where ? h('p', { class: 'help' }, where) : '',  // replaceChildren would print a null
+      failNote ? h('p', { class: 'help' }, failNote) : '',
       h('div', { class: 'stack' }, fields),
       h('div', { class: 'row' },
         h('button', { type: 'button', disabled: order[0] === s.id, onclick: () => { S.cfg.loop = S.cfg.loop || {}; S.cfg.loop.start = s.id; normalizeLoop(); refresh() } }, 'Make start'),
@@ -1067,32 +1373,32 @@ function renderLoop() {
     savePositions()
     const st = list(['loop', 'stages'])
     // freeze the edges, so the new node (appended to the list) is not wired in by list order
-    const succ = Object.fromEntries(st.map((x) => [x.id, successorOf(st, x.id)]))
-    for (const x of st) x.next = succ[x.id] || 'end'
-    let id = kind === 'agent' ? 'agent' : kind
+    const succ = Object.fromEntries(st.map((x) => [x.id, successorsOf(st, x.id)]))
+    for (const x of st) x.next = asNext(succ[x.id])
+    const base = kind === 'gate' ? 'guardrails' : kind
+    let id = base
     let n = 2
-    while (st.some((x) => x.id === id)) id = `${kind}-${n++}`
+    while (st.some((x) => x.id === id)) id = `${base}-${n++}`
     const r = canvas.getBoundingClientRect()
     const c = toWorld(r.left + r.width / 2, r.top + r.height / 2)
     const node = { id, kind, title: '', next: 'end', pos: { x: Math.round((c.x - NODE_W / 2) / 8) * 8, y: Math.round((c.y - NODE_H / 2) / 8) * 8 } }
-    if (kind === 'agent' || kind === 'integrate') node.agent = (S.server.agents || [])[0]?.name || ''
+    if (kind !== 'approval') node.phase = phaseOf(node)  // agents: the first phase; guardrails blocks: guardrails, review or the last
+    if (kind === 'agent') node.agent = (S.server.agents || [])[0]?.name || ''
     st.push(node)
     normalizeLoop()
     D.sel = { type: 'node', id }
     refresh()
-    toast(`Added ${id}. Drag from a port to connect it.`)
+    toast(kind === 'gate' ? `Added ${id}. Pick the guardrails this gate runs, then drag from a port to connect it.` : `Added ${id}. Drag from a port to connect it.`)
   }
-  const kinds = new Set(G().stages.map((s) => s.kind))
   const palette = h('div', { class: 'palette', role: 'toolbar', 'aria-label': 'Add a stage' },
     h('span', { class: 'help' }, 'Add'),
-    STAGE_KINDS.map((k) => h('button', { type: 'button', class: `small k-${k}`, disabled: SINGLETON.has(k) && kinds.has(k),
-      title: SINGLETON.has(k) && kinds.has(k) ? `The loop already has a ${k} stage` : KIND_HELP[k], onclick: () => addNode(k) }, `+ ${KIND_LABEL[k]}`)))
+    STAGE_KINDS.map((k) => h('button', { type: 'button', class: `small k-${k}`, title: KIND_HELP[k], onclick: () => addNode(k) }, `+ ${KIND_LABEL[k]}`)))
   const fit = () => {
     const st = G().stages.filter((s) => posOf(s))
     if (!st.length) return
     const r = canvas.getBoundingClientRect()
     const minX = Math.min(...st.map((s) => posOf(s).x)) - 40, minY = Math.min(...st.map((s) => posOf(s).y)) - 50
-    const maxX = Math.max(...st.map((s) => posOf(s).x + NODE_W)) + 40, maxY = Math.max(...st.map((s) => posOf(s).y + NODE_H)) + 120
+    const maxX = Math.max(...st.map((s) => posOf(s).x + NODE_W)) + 40, maxY = Math.max(...st.map((s) => posOf(s).y + NODE_H)) + 60 + 22 * st.filter(hasFail).length  // room for the failure lanes
     D.k = Math.min(1.25, Math.max(0.3, Math.min(r.width / (maxX - minX), r.height / (maxY - minY))))
     D.x = (r.width - (maxX - minX) * D.k) / 2 - minX * D.k
     D.y = (r.height - (maxY - minY) * D.k) / 2 - minY * D.k
@@ -1135,7 +1441,13 @@ function renderLoop() {
       const st = G().stages
       if (D.sel.type === 'node') { if (confirm(`Remove stage ${D.sel.id}?`)) deleteStage(D.sel.id) }
       else if (D.sel.kind === 'fail') { const s = st.find((x) => x.id === D.sel.from); if (s) { delete s.on_fail; markDirty() } D.sel = null; refresh() }
-      else { setNext(st, D.sel.from, null); D.sel = null; refresh() }
+      else {
+        // removes just this edge; a fan-out keeps its other branches
+        const outs = successorsOf(st, D.sel.from)
+        setNext(st, D.sel.from, outs.filter((n) => n !== (D.sel.to || outs[0])))
+        D.sel = null
+        refresh()
+      }
     }
     if (e.key === 'Escape') { D.sel = null; refresh() }
   })
@@ -1153,11 +1465,9 @@ function renderLoop() {
 function renderAgents() {
   const agents = S.server.agents || []
   const used = new Set()
-  const eff = S.server.effective
-  if (eff) {
-    for (const s of eff.loop.stages) if (s.agent) used.add(s.agent)
-    for (const b of eff.builders) used.add(b.agent)
-    for (const r of [...eff.reviewers.always, ...eff.reviewers.routed]) used.add(r.agent)
+  for (const s of val(['loop', 'stages']) || []) {
+    const a = s.agent || (s.kind === 'agent' && defaultAgent(s))
+    if (a) used.add(a)
   }
   if (!S.agent || !agents.some((a) => a.name === S.agent)) S.agent = agents[0] ? agents[0].name : null
   const lib = S.server.library.agents || []
@@ -1218,7 +1528,7 @@ function agentEditor(a) {
         d.name = n; save()
       } }, 'Rename'),
       h('button', { type: 'button', class: 'danger', onclick: async () => {
-        if (!confirm(`Delete agent ${a.name}? Stages, builders or reviewers that use it will fail validation.`)) return
+        if (!confirm(`Delete agent ${a.name}? Loop stages that use it will fail validation.`)) return
         try { applyEdit(await api('DELETE', `agents/${a.name}`)); S.agent = null; render(); toast(`Deleted ${a.name}`) } catch (e) { toast(e.message, true) }
       } }, 'Delete'),
       h('button', { type: 'button', class: 'primary', onclick: save }, 'Save agent')),
@@ -1303,124 +1613,181 @@ function skillEditor(s, users) {
     mdEditor('sk-body', 'Skill', d))
 }
 
-// ---- Gate ----------------------------------------------------------------------------------------
-function renderGate() {
+// ---- Guardrails ----------------------------------------------------------------------------------
+// The deterministic checks a gate block runs. Two are built in (switched on or off, their command is
+// fixed); the rest are gate.steps, copied from the library or written by hand, commands in full view.
+const guardLib = () => (S.server.library && S.server.library.guardrails) || []
+const guardBuiltins = () => (S.server.library && S.server.library.builtin_guardrails) || []
+function guardTitle(step) {
+  const lib = guardLib().find((g) => g.step.key === step.key)
+  return lib ? lib.title : step.chip || step.key
+}
+const codeBlock = (text) => h('pre', { class: 'code' }, h('code', {}, text || ''))
+// Every guardrail a gate block can pick: the built-ins first, then gate.steps.
+function guardrailChoices() {
+  return [
+    ...guardBuiltins().map((b) => ({ key: b.key, title: b.title, cmd: b.cmd, off: val(['gate', b.flag]) === false, why: 'off in Guardrails' })),
+    ...(val(['gate', 'steps']) || []).map((g) => ({ key: g.key, title: guardTitle(g), cmd: g.cmd, off: g.mode === 'off', why: 'mode off' })),
+  ]
+}
+
+function renderGuardrails() {
   const steps = val(['gate', 'steps']) || []
   const setup = val(['gate', 'setup']) || []
   const stepKeys = steps.map((s) => s.key)
-  return h('div', {},
-    section('Gate',
-      h('p', { class: 'help' }, 'The deterministic checks a job branch must pass before any reviewer sees it. Each step is bash run in the worktree with WORKTREE, BASE, MERGE_BASE, OUT, REPO, FACTORY_DIR and CHANGED (a file listing changed paths) set.'),
+  const builders = (val(['loop', 'stages']) || []).filter((s) => roleOf(s) === 'builder').map((s) => s.id)
+  const moveStep = (i, j) => {
+    const arr = list(['gate', 'steps'])
+    if (j < 0 || j >= arr.length) return
+    ;[arr[i], arr[j]] = [arr[j], arr[i]]
+    markDirty()
+    render()
+  }
+  const iconBtn = (label, text, disabled, fn, cls = 'icon') => h('button', { type: 'button', class: cls, title: label, 'aria-label': label, disabled, onclick: fn }, text)
+  const builtin = guardBuiltins().map((b) => h('div', { class: 'guard' },
+    h('div', { class: 'item-head' }, h('strong', {}, b.title), h('span', { class: 'badge' }, b.key), h('span', { class: 'spacer' }),
+      field('On', ['gate', b.flag], { type: 'bool', rerender: true })),
+    h('p', { class: 'help' }, b.description),
+    codeBlock(b.cmd)))
+  const cards = steps.map((st, i) => {
+    const P = ['gate', 'steps', i]
+    const mode = st.mode || 'gate'
+    const lines = String(st.cmd || '').split('\n').length
+    return h('li', { class: 'guard item' },
+      h('div', { class: 'item-head' }, h('strong', {}, guardTitle(st)), h('span', { class: 'badge' }, st.chip || st.key),
+        h('span', { class: `mode m-${mode}`, title: { gate: 'Fails the gate', report: 'Runs, never fails the gate', off: 'Does not run' }[mode] }, mode),
+        h('span', { class: 'spacer' }),
+        iconBtn('Move up', '↑', i === 0, () => moveStep(i, i - 1)),
+        iconBtn('Move down', '↓', i === steps.length - 1, () => moveStep(i, i + 1)),
+        iconBtn(`Remove ${st.key}`, '✕', false, () => {
+          if (!confirm(`Remove the guardrail ${st.key}? Guardrails blocks that pick it will fail validation.`)) return
+          list(['gate', 'steps']).splice(i, 1)
+          markDirty()
+          render()
+        }, 'icon danger')),
+      field('Command (bash)', [...P, 'cmd'], { type: 'textarea', mono: true, wide: true, rows: Math.min(18, Math.max(2, lines + 1)) }),
+      envRows([...P, 'env'], st),
       grid(
-        field('Scan every commit for secrets', ['gate', 'secrets'], { type: 'bool' }),
-        field('Fail on a dirty worktree afterwards', ['gate', 'clean_tree'], { type: 'bool' }),
-        field('Timeout (minutes)', ['gate', 'timeout_min'], { type: 'number', min: 1 }))),
-    section('Setup checks',
-      h('p', { class: 'help' }, 'Run before any step; a failure stops the gate with the error shown (for example: node_modules missing).'),
+        field('Key', [...P, 'key'], { help: 'gate.json key; gate blocks pick it by this' }),
+        field('Chip', [...P, 'chip'], { emptyNull: true, help: 'Board label' }),
+        field('Mode', [...P, 'mode'], { type: 'select', options: ['gate', 'report', 'off'], rerender: true, help: 'report: runs, never fails the gate' })),
+      h('details', { class: 'more' }, h('summary', {}, 'More'),
+        grid(
+          field('Only when changed (globs)', [...P, 'when_changed'], { type: 'list' }),
+          field('Requires guardrails', [...P, 'requires'], { type: 'list', placeholder: stepKeys.filter((k) => k !== st.key).join('\n') || 'build' }),
+          field('Timeout (minutes)', [...P, 'timeout_min'], { type: 'number', min: 1 }),
+          field('Hold the port lock', [...P, 'lock'], { type: 'bool', help: 'Serialise app servers across jobs' }),
+          field('JUnit XML', [...P, 'junit'], { emptyNull: true, placeholder: 'junit.xml', help: 'Relative to the round folder' }),
+          field('Cobertura XML', [...P, 'coverage', 'cobertura'], { emptyNull: true, placeholder: 'coverage.xml' }),
+          field('Coverage summary JSON', [...P, 'coverage', 'json_summary'], { emptyNull: true, placeholder: 'coverage/coverage-summary.json' }),
+          field('Metrics JSON', [...P, 'metrics_file'], { emptyNull: true, help: 'Numbers merged into gate.json' }),
+          field('If only this fails', [...P, 'external_failure'], { type: 'select', options: [['fail', 'use up a round'], ['needs-human', 'needs human, keep the round']] }),
+          field('Failures go to builder', [...P, 'builder'], { type: 'select', parse: (v) => v || undefined,
+            options: [['', '(every builder)'], ...builders.map((b) => [b, b]), ...(st.builder && !builders.includes(st.builder) ? [[st.builder, `${st.builder} (missing)`]] : [])] }))))
+  })
+  const addStep = (step) => {
+    const arr = list(['gate', 'steps'])
+    let key = step.key
+    for (let n = 2; arr.some((x) => x.key === key); n++) key = `${step.key}-${n}`
+    arr.push({ ...clone(step), key })
+    markDirty()
+    render()
+    toast(`Added ${key}. Guardrails blocks that run all of them pick it up; others choose it in the Loop.`)
+  }
+  const picker = S.guardPicker ? h('div', { class: 'card picker-lib' },
+    h('div', { class: 'item-head' }, h('h2', {}, 'Library'), h('span', { class: 'spacer' }),
+      h('button', { type: 'button', class: 'small', onclick: () => { S.guardPicker = false; render() } }, 'Close')),
+    guardLib().length ? h('ul', { class: 'items' }, guardLib().map((g) => {
+      const added = stepKeys.includes(g.step.key)
+      return h('li', { class: 'guard item' },
+        h('div', { class: 'item-head' }, h('strong', {}, g.title), h('span', { class: 'badge' }, g.step.chip || g.step.key),
+          g.step.mode && g.step.mode !== 'gate' ? h('span', { class: `mode m-${g.step.mode}` }, g.step.mode) : null, h('span', { class: 'spacer' }),
+          h('button', { type: 'button', class: added ? 'small' : 'small primary', onclick: () => addStep(g.step) }, added ? 'Added · add again' : 'Add')),
+        h('p', { class: 'help' }, g.description),
+        h('details', { class: 'more' }, h('summary', {}, 'Show code'), codeBlock(g.step.cmd),
+          g.step.env && Object.keys(g.step.env).length ? codeBlock(Object.entries(g.step.env).map(([k, v]) => `${k}=${v}`).join('\n')) : null))
+    })) : h('p', { class: 'help' }, 'The library has no guardrails.')) : null
+  return h('div', {},
+    section('Guardrails',
+      h('p', { class: 'help' }, 'Guardrails are deterministic checks on a job\'s branch. Guardrails blocks in the Loop run them, each picking which ones (or all). A guardrail is bash run in the worktree with WORKTREE, BASE, MERGE_BASE, OUT, REPO, FACTORY_DIR and CHANGED (a file listing changed paths) set.')),
+    section('Built in', ...builtin),
+    section('Your guardrails',
+      steps.length ? h('ol', { class: 'items' }, cards) : h('p', { class: 'help' }, 'None yet. Add one from the library or write your own.'),
+      h('div', { class: 'row' },
+        h('button', { type: 'button', class: 'primary', onclick: () => { S.guardPicker = !S.guardPicker; render() } }, '+ From library'),
+        h('button', { type: 'button', onclick: () => {
+          let n = steps.length + 1
+          while (stepKeys.includes(`check-${n}`)) n++
+          list(['gate', 'steps']).push({ key: `check-${n}`, cmd: '' })
+          markDirty()
+          render()
+        } }, '+ Custom guardrail'))),
+    picker,
+    section('Run settings',
+      grid(field('Timeout for a guardrails run (minutes)', ['gate', 'timeout_min'], { type: 'number', min: 1 })),
+      h('h3', {}, 'Setup checks'),
+      h('p', { class: 'help' }, 'Run before any guardrail; a failure stops the gate with the error shown (for example: node_modules missing).'),
       h('ol', { class: 'items' }, setup.map((c, i) => {
         const P = ['gate', 'setup', i]
         return h('li', { class: 'item' }, h('div', { class: 'item-head' }, h('strong', {}, c.error || c.test || `check ${i + 1}`), h('span', { class: 'spacer' }),
           moveBtns(list(['gate', 'setup']), i), removeBtn(list(['gate', 'setup']), i, 'check')),
         grid(field('Test (bash)', [...P, 'test'], { wide: true, placeholder: '[[ -d node_modules ]]' }), field('Error', [...P, 'error'], { wide: true })))
       })),
-      h('button', { type: 'button', onclick: () => { list(['gate', 'setup']).push({ test: '', error: '' }); markDirty(); render() } }, 'Add check')),
-    section('Steps',
-      h('ol', { class: 'items' }, steps.map((st, i) => {
-        const P = ['gate', 'steps', i]
-        const arr = list(['gate', 'steps'])
-        const li = h('li', { class: 'item' },
-          h('div', { class: 'item-head' }, h('span', { class: 'grip', 'aria-hidden': 'true' }, '⋮⋮'), h('span', { class: 'badge' }, st.chip || st.key), h('strong', {}, st.key),
-            h('span', { class: 'help inline' }, st.mode === 'gate' || !st.mode ? '' : `mode ${st.mode}`),
-            h('span', { class: 'spacer' }), moveBtns(arr, i), removeBtn(arr, i, 'step')),
-          grid(
-            field('Key', [...P, 'key'], { help: 'gate.json key' }),
-            field('Chip', [...P, 'chip'], { emptyNull: true, help: 'Dashboard label' }),
-            field('Mode', [...P, 'mode'], { type: 'select', options: ['gate', 'report', 'off'], help: 'report: runs, never fails the gate' }),
-            field('Command (bash)', [...P, 'cmd'], { type: 'textarea', mono: true, wide: true, rows: 3 }),
-            field('Only when changed (globs)', [...P, 'when_changed'], { type: 'list' }),
-            field('Requires steps', [...P, 'requires'], { type: 'list', placeholder: stepKeys.filter((k) => k !== st.key).join('\n') || 'build' }),
-            field('Timeout (minutes)', [...P, 'timeout_min'], { type: 'number', min: 1 }),
-            field('Hold the port lock', [...P, 'lock'], { type: 'bool', help: 'Serialise app servers across jobs' }),
-            field('JUnit XML', [...P, 'junit'], { emptyNull: true, placeholder: 'junit.xml', help: 'Relative to the round folder' }),
-            field('Cobertura XML', [...P, 'coverage', 'cobertura'], { emptyNull: true, placeholder: 'coverage.xml' }),
-            field('Coverage summary JSON', [...P, 'coverage', 'json_summary'], { emptyNull: true, placeholder: 'coverage/coverage-summary.json' }),
-            field('Metrics JSON', [...P, 'metrics_file'], { emptyNull: true, help: 'Numbers merged into gate.json' }),
-            field('If only this fails', [...P, 'external_failure'], { type: 'select', options: [['fail', 'use up a round'], ['needs-human', 'needs human, keep the round']] }),
-            envEditor([...P, 'env'])))
-        return draggable(li, arr, i)
-      })),
-      h('button', { type: 'button', onclick: () => { list(['gate', 'steps']).push({ key: `step${steps.length + 1}`, cmd: '' }); markDirty(); render() } }, 'Add step')))
+      h('button', { type: 'button', onclick: () => { list(['gate', 'setup']).push({ test: '', error: '' }); markDirty(); render() } }, 'Add check')))
 }
 
-function envEditor(path) {
-  const id = nextId('env')
+// A guardrail's environment as KEY = value rows (no secrets: the values are in the config). TOPICS gets
+// one "name: word, phrase" line per topic and PATTERNS one regex per line.
+function envRows(path, step) {
   const cur = val(path) || {}
-  const text = Object.entries(cur).map(([k, v]) => `${k}=${v}`).join('\n')
-  return h('div', { class: 'field wide' }, h('label', { for: id }, 'Environment (KEY=value per line, no secrets)'),
-    h('textarea', { id, class: 'mono', rows: 2, onchange: (e) => {
-      const out = {}
-      for (const line of e.target.value.split('\n')) {
-        const m = line.match(/^\s*([A-Za-z_]\w*)\s*=(.*)$/)
-        if (m) out[m[1]] = m[2].trim()
-      }
-      setIn(path, out)
-    } }, text))
+  const put = (k, v) => { setIn(path, { ...(val(path) || {}), [k]: v }) }
+  const rows = Object.entries(cur).map(([k, v]) => {
+    const id = nextId('env')
+    let input
+    if (k === 'TOPICS') {
+      input = h('textarea', { id, class: 'mono', rows: Math.max(2, String(v).split(';').length + 1), placeholder: 'codenames: project falcon, skunkworks',
+        onchange: (e) => put(k, e.target.value.split('\n').map((x) => x.trim()).filter(Boolean).join('; ')) },
+      String(v).split(';').map((x) => x.trim()).filter(Boolean).join('\n'))
+    } else if (k === 'PATTERNS' || String(v).includes('\n')) {
+      input = h('textarea', { id, class: 'mono', rows: Math.max(2, String(v).split('\n').length + 1), onchange: (e) => put(k, e.target.value.replace(/\s+$/, '')) }, v)
+    } else {
+      input = h('input', { id, type: 'text', class: 'mono', value: v, spellcheck: 'false', autocomplete: 'off', onchange: (e) => put(k, e.target.value) })
+    }
+    const help = { TOPICS: 'One topic per line: name: word, phrase. Matched case-insensitively on word boundaries; matches are never logged.',
+      PATTERNS: 'One Python regex per line, searched in added lines; (?i) for case-insensitive.', PATHS: 'Space-separated globs; empty checks every file.' }[k]
+    return h('div', { class: 'envrow' }, h('label', { for: id, class: 'mono' }, k), input,
+      h('button', { type: 'button', class: 'icon danger', title: `Remove ${k}`, 'aria-label': `Remove ${k}`, onclick: () => {
+        const next = { ...(val(path) || {}) }
+        delete next[k]
+        setIn(path, next)
+        render()
+      } }, '✕'),
+      help ? h('div', { class: 'help' }, help) : null)
+  })
+  const add = h('input', { type: 'text', class: 'mono', placeholder: 'NEW_VARIABLE', 'aria-label': `New environment variable for ${step.key}`, autocomplete: 'off',
+    onkeydown: (e) => {
+      if (e.key !== 'Enter') return
+      e.preventDefault()
+      const k = e.target.value.trim()
+      if (!/^[A-Za-z_]\w*$/.test(k)) { e.target.setCustomValidity('Letters, digits and _'); e.target.reportValidity(); e.target.setCustomValidity(''); return }
+      put(k, '')
+      render()
+    } })
+  return h('div', { class: 'field wide env' }, h('label', {}, 'Environment (no secrets)'), ...rows,
+    h('div', { class: 'envrow add' }, add, h('span', { class: 'help' }, 'Enter adds a variable')))
 }
 
-// ---- Builders and reviewers ----------------------------------------------------------------------
-function agentOptions(prefix, cur) {
+// ---- stage editors used by the loop inspector (builders and reviewers are agent stages) -----------
+// `def`: the default agent name ('' then means "use it"); without one an agent must be chosen.
+function agentOptions(def, cur) {
   const names = (S.server.agents || []).map((a) => a.name)
-  const opts = [['', `(${prefix}<id>)`], ...names.map((n) => [n, n])]
+  const opts = [['', def ? `(default: ${def})` : '(choose an agent)'], ...names.map((n) => [n, n])]
   if (cur && !names.includes(cur)) opts.push([cur, `${cur} (missing)`])
   return opts
 }
 
-function renderTeam() {
-  const builders = val(['builders']) || []
-  const always = val(['reviewers', 'always']) || []
-  const routed = val(['reviewers', 'routed']) || []
-  const bids = builders.map((b) => b.id)
-  return h('div', {},
-    section('Builders',
-      h('p', { class: 'help' }, 'Builders run in parallel in the build stage. The design names which ones a job needs; gate and review findings go back to the builder whose area they touch.'),
-      h('ol', { class: 'items' }, builders.map((b, i) => {
-        const P = ['builders', i]
-        const arr = list(['builders'])
-        return h('li', { class: 'item' }, h('div', { class: 'item-head' }, h('strong', {}, b.id), h('span', { class: 'spacer' }), moveBtns(arr, i), removeBtn(arr, i, 'builder')),
-          grid(field('Id', [...P, 'id']), field('Agent', [...P, 'agent'], { type: 'select', options: agentOptions('builder-', b.agent), parse: (v) => v || null }),
-            field('Description', [...P, 'description'], { wide: true }),
-            field('Area (globs)', [...P, 'area_globs'], { type: 'list', wide: true })))
-      })),
-      h('button', { type: 'button', onclick: () => { list(['builders']).push({ id: `b${builders.length + 1}`, area_globs: [] }); markDirty(); render() } }, 'Add builder')),
-    section('Always-on reviewers',
-      h('ol', { class: 'items' }, always.map((r, i) => {
-        const P = ['reviewers', 'always', i]
-        const arr = list(['reviewers', 'always'])
-        return h('li', { class: 'item' }, h('div', { class: 'item-head' }, h('strong', {}, r.id), h('span', { class: 'spacer' }), removeBtn(arr, i, 'reviewer')),
-          grid(field('Id', [...P, 'id']), field('Agent', [...P, 'agent'], { type: 'select', options: agentOptions('reviewer-', r.agent), parse: (v) => v || null }),
-            field('Chip', [...P, 'chip'], { emptyNull: true })))
-      })),
-      h('button', { type: 'button', onclick: () => { list(['reviewers', 'always']).push({ id: 'new' }); markDirty(); render() } }, 'Add reviewer')),
-    section('Routed reviewers',
-      h('p', { class: 'help' }, 'Run only when the diff matches: a changed path, an added line, an added line in certain files, or a gate metric.'),
-      h('ol', { class: 'items' }, routed.map((r, i) => {
-        const P = ['reviewers', 'routed', i]
-        const arr = list(['reviewers', 'routed'])
-        return h('li', { class: 'item' }, h('div', { class: 'item-head' }, h('strong', {}, r.id), h('span', { class: 'spacer' }), moveBtns(arr, i), removeBtn(arr, i, 'reviewer')),
-          grid(field('Id', [...P, 'id']), field('Agent', [...P, 'agent'], { type: 'select', options: agentOptions('reviewer-', r.agent), parse: (v) => v || null }),
-            field('Chip', [...P, 'chip'], { emptyNull: true }),
-            field('Findings go to builder', [...P, 'builder'], { type: 'select', options: [['', '(by path)'], ...bids.map((x) => [x, x])], parse: (v) => v || null }),
-            field('Changed path globs', [...P, 'path_globs'], { type: 'list', wide: true }),
-            field('Added-line patterns (regex)', [...P, 'diff_patterns'], { type: 'list', wide: true }),
-            scopedEditor([...P, 'scoped_patterns']),
-            metricEditor([...P, 'metrics'])))
-      })),
-      h('button', { type: 'button', onclick: () => { list(['reviewers', 'routed']).push({ id: `area${routed.length + 1}`, path_globs: [] }); markDirty(); render() } }, 'Add routed reviewer')))
-}
-
-function scopedEditor(path) {
+function scopedEditor(path, cur = val(path) || []) {
   const id = nextId('sc')
-  const cur = val(path) || []
   const text = cur.map((s) => `${(s.paths || []).join(',')} :: ${s.pattern}`).join('\n')
   return h('div', { class: 'field wide' }, h('label', { for: id }, 'Scoped patterns (globs, comma separated :: regex)'),
     h('textarea', { id, class: 'mono', rows: 2, placeholder: 'src/**/*.py :: @Property', onchange: (e) => {
@@ -1434,9 +1801,8 @@ function scopedEditor(path) {
     } }, text))
 }
 
-function metricEditor(path) {
+function metricEditor(path, cur = val(path) || []) {
   const id = nextId('mt')
-  const cur = val(path) || []
   return h('div', { class: 'field wide' }, h('label', { for: id }, 'Gate metrics (key > value per line)'),
     h('textarea', { id, class: 'mono', rows: 2, placeholder: 'data_mb_delta > 1', onchange: (e) => {
       const out = []
@@ -1546,6 +1912,7 @@ function renderDelivery() {
   const warns = (S.issues.warnings || []).filter((w) => /deliver|direct|approval/i.test(w))
   return h('div', {},
     section('How a finished job leaves the factory',
+      h('p', { class: 'help' }, 'Delivery is not a loop block: it runs on its own after the last stage of the loop.'),
       h('fieldset', { class: 'radios' }, h('legend', {}, 'Mode'), MODES.map(([v, l, help]) => {
         const id = `dm-${v}`
         return h('div', { class: 'radio' + (mode === v ? ' sel' : '') },
@@ -1891,6 +2258,9 @@ async function openProject(pid, tab) {
   }
   let saved = null
   try { saved = localStorage.getItem(`studio.tab.${pid}`) } catch { /* private mode */ }
+  // the Guardrails tab used to be called gate
+  if (tab === 'gate') tab = 'guardrails'
+  if (saved === 'gate') saved = 'guardrails'
   S.tab = TABS.some(([k]) => k === tab) ? tab : (TABS.some(([k]) => k === saved) ? saved : 'board')
   render()
 }

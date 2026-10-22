@@ -107,6 +107,7 @@
   .col-head .who { order: 3; flex-basis: 100%; font-size: 11px; color: var(--faint); font-family: var(--mono);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .col-head .count { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .col[style*="--ph"] .col-head { border-bottom: 2px solid hsl(var(--ph) 55% 55%); }
   .col.you .col-head { border-bottom-color: var(--human); }
   .col.you h3 { color: var(--human); }
   .col.ready-col .col-head { border-bottom-color: var(--ready); }
@@ -146,6 +147,8 @@
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .agent { font-family: var(--mono); font-size: 11px; color: var(--active); margin-top: 6px; overflow-wrap: anywhere; }
+  .state { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin-top: 6px; }
+  .card.you .state { color: var(--human); }
   .note { font-size: 12px; color: var(--muted); margin-top: 6px; overflow-wrap: anywhere; }
   .card.you .note { color: var(--human); }
 
@@ -343,6 +346,8 @@ let LIVE = new Set()
 let YOU = new Set()
 let GATE = []
 let REVIEWERS = []
+let GATE_STAGES = new Set()    // gate block ids
+let REVIEW_STAGES = new Set()  // job.stage values while reviewers run (a parallel group shows its first stage)
 let JOB_FILES = []
 let SKIP_DIRS = /^$/
 let HAS_COVERAGE = false
@@ -353,8 +358,36 @@ const EMBEDDED = window.parent !== window && /\/board\/[^/]*$/.test(location.pat
 // `${job}:${action}` of the clicks the studio has not answered yet, so a re-render keeps the button disabled.
 const PENDING = new Set()
 let DELIVERY_STAGE = null
+let APPROVALS = {}   // approval stage id -> stage, for the Needs human cards
 let CLI = '/factory'
 
+// Success edges as core/graph.py reads them: `next` unset (the next stage in the list), `end`, one id, or a
+// list of ids (a fan-out: they run at the same time and join again after).
+function successorsOf(stages, sid) {
+  const i = stages.findIndex((s) => s.id === sid)
+  if (i < 0) return []
+  const n = stages[i].next
+  if (n === 'end') return []
+  if (Array.isArray(n)) return n.filter((x) => x !== 'end').map(String)
+  if (n) return [n]
+  return i + 1 < stages.length ? [stages[i + 1].id] : []
+}
+// graph.groups: the run path as steps, a fan-out being one step. The config was validated when it was
+// rendered, so this only stops on a loop or an unknown id rather than checking the rules again.
+function groupsOf(stages, start) {
+  const out = []
+  const seen = new Set()
+  let cur = stages.length ? [start || stages[0].id] : []
+  while (cur.length && cur.every((id) => !seen.has(id) && stages.some((s) => s.id === id))) {
+    cur.forEach((id) => seen.add(id))
+    out.push(cur)
+    cur = successorsOf(stages, cur[0])
+  }
+  return out
+}
+
+// The studio's loop designer colours phases the same way: by their place in loop.phases.
+const PHASE_HUES = [210, 140, 28, 280, 350, 180, 55, 250, 100, 310]
 const reEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 function configure(cfg) {
@@ -367,68 +400,79 @@ function configure(cfg) {
   MAX_ROUNDS = cfg.loop.max_rounds
   HEADLESS = cfg.runtime.kind !== 'claude-code'
   CLI = HEADLESS ? 'factory' : '/factory'
-  // Columns follow the run order (the success edges), not the order of the list in the config.
+  // Stages in run order (the success edges), not the order of the list in the config.
   const order = (cfg._derived && cfg._derived.order) || cfg.loop.stages.map((s) => s.id)
   const stages = order.map((id) => cfg.loop.stages.find((s) => s.id === id)).filter(Boolean)
+  const groups = groupsOf(cfg.loop.stages, cfg.loop.start)
+  const groupOf = Object.fromEntries(groups.flatMap((g) => g.map((id) => [id, g])))
   const mode = cfg.delivery.mode
-  DELIVERY_STAGE = stages.find((s) => s.kind === 'delivery') || null
-  const buildLabel = cfg.ui.build_label || cfg.builders.map((b) => b.id).join(' ∥ ')
-  const firstApproval = stages.findIndex((s) => s.kind === 'approval')
-  const plan = stages.filter((s, i) => s.kind === 'agent' && i < firstApproval)
+  const phaseList = cfg.loop.phases || []
+  // Mirrors graph.role_of: the stage's role (factory.json fills it in), else what the agent's name says.
+  const roleForAgent = (a) => ['builder', 'reviewer', 'integrator'].find((r) => a === r || (a || '').startsWith(`${r}-`)) || 'plain'
+  const role = (s) => (s.kind !== 'agent' ? null : s.role || roleForAgent(s.agent))
+  // Phases are only columns. A stage without one: agents the first phase, gates review (or the last).
+  const pids = phaseList.map((p) => p.id)
+  const phaseOf = (s) => (s.kind === 'approval' ? null : s.phase
+    || (s.kind === 'gate' ? (['guardrails', 'review'].find((p) => pids.includes(p)) || pids[pids.length - 1]) : pids[0]))
+  // Delivery is not a stage of the loop: it follows the last one on its own as the stage `deliver`.
+  DELIVERY_STAGE = mode !== 'none' ? { id: 'deliver' } : null
+  APPROVALS = Object.fromEntries(cfg.loop.stages.filter((s) => s.kind === 'approval').map((s) => [s.id, s]))
 
-  COLUMNS = []
-  stages.forEach((s) => {
-    if (plan.includes(s)) {
-      if (s === plan[0]) {
-        COLUMNS.push({ key: 'plan', stages: plan.map((p) => p.id), label: 'Plan', who: plan.map((p) => p.title || p.id).join(' · ') })
-      }
-      return
-    }
-    const label = s.title || s.id
-    if (s.kind === 'approval') {
-      COLUMNS.push({ key: s.id, stages: [`awaiting-${s.id}`], label: `⏸ ${label}`, who: 'you', cls: 'you' })
-    } else if (s.kind === 'builders') {
-      COLUMNS.push({ key: s.id, stages: [s.id], label, who: buildLabel })
-    } else if (s.kind === 'gate') {
-      COLUMNS.push({ key: s.id, stages: [s.id], label, who: 'gate' })
-    } else if (s.kind === 'reviewers') {
-      COLUMNS.push({ key: s.id, stages: [s.id], label, who: 'reviewer-*' })
-    } else if (s.kind === 'delivery') {
-      if (mode === 'none') return
-      if (cfg.delivery.require_approval) {
-        COLUMNS.push({ key: s.id, stages: [`awaiting-${s.id}`, s.id], label: '⏸ Approve delivery', who: 'you', cls: 'you' })
-      } else {
-        COLUMNS.push({ key: s.id, stages: [s.id], label, who: mode })
-      }
-    } else {
-      COLUMNS.push({ key: s.id, stages: [s.id], label, who: s.agent || '' })
-    }
+  // The board is the phases in order, then Done, then Needs human (every approval and anything stuck).
+  COLUMNS = phaseList.map((p, i) => {
+    const members = stages.filter((s) => phaseOf(s) === p.id)
+    // Agents of one fan-out (they run at the same time) are joined with ∥, the rest with ·.
+    const parts = []
+    members.forEach((s, i) => {
+      const name = s.kind === 'gate' ? 'gate' : s.agent || s.title || s.id
+      if (i && groupOf[s.id] && groupOf[s.id] === groupOf[members[i - 1].id]) parts[parts.length - 1].push(name)
+      else parts.push([name])
+    })
+    return { key: `p:${p.id}`, stages: cfg.loop.stages.filter((s) => phaseOf(s) === p.id).map((s) => s.id),
+      label: p.title || p.id, who: parts.map((g) => g.join(' ∥ ')).join(' · '), hue: PHASE_HUES[i % PHASE_HUES.length] }
   })
-  COLUMNS.push({ key: 'ready', stages: ['ready'], label: mode === 'none' ? 'Ready to push' : 'Ready', who: mode === 'none' ? 'you' : 'deliver', cls: 'ready-col' })
-  if (mode !== 'none') COLUMNS.push({ key: 'delivered', stages: ['delivered'], label: 'Delivered', who: mode, cls: 'ready-col' })
-  COLUMNS.push({ key: 'human', stages: ['needs-human'], label: 'Needs human', who: 'you', cls: 'you' })
+  COLUMNS.push({ key: 'done', stages: ['deliver', 'ready', 'delivered'], label: 'Done', who: mode === 'none' ? 'you push' : mode, cls: 'ready-col' })
+  COLUMNS.push({ key: 'human', stages: [...Object.keys(APPROVALS).map((id) => `awaiting-${id}`), 'awaiting-deliver', 'needs-human'],
+    label: 'Needs human', who: 'you', cls: 'you' })
   STAGE_COL = Object.fromEntries(COLUMNS.flatMap((c) => c.stages.map((st) => [st, c.key])))
   LIVE = new Set(stages.filter((s) => s.kind !== 'approval').map((s) => s.id))
-  YOU = new Set([...stages.filter((s) => s.kind === 'approval').map((s) => `awaiting-${s.id}`), 'needs-human'])
-  if (DELIVERY_STAGE) YOU.add(`awaiting-${DELIVERY_STAGE.id}`)
+  YOU = new Set([...Object.keys(APPROVALS).map((id) => `awaiting-${id}`), 'needs-human'])
+  if (DELIVERY_STAGE) {
+    LIVE.add('deliver')
+    if (cfg.delivery.require_approval) YOU.add('awaiting-deliver')
+  }
   document.documentElement.style.setProperty('--cols', String(COLUMNS.length))
 
-  GATE = cfg.gate.steps.filter((g) => g.mode !== 'off').map((g) => [g.key, g.chip || g.key])
-  if (cfg.gate.secrets) {
+  // Gate chips: one per guardrail some gate block on the path runs. A gate without `steps` runs them all,
+  // the built-in secrets and clean-tree included; the secret scan shows as the `keys` chip.
+  const gates = stages.filter((s) => s.kind === 'gate')
+  const everything = [...cfg.gate.steps.map((g) => g.key), 'secrets', 'clean-tree']
+  const picked = new Set(gates.flatMap((s) => (s.steps && s.steps.length ? s.steps : everything)))
+  GATE = cfg.gate.steps.filter((g) => g.mode !== 'off' && picked.has(g.key)).map((g) => [g.key, g.chip || g.key])
+  if (cfg.gate.secrets && picked.has('secrets')) {
     const lint = GATE.findIndex(([k]) => k === 'lint')
     GATE.splice(lint >= 0 ? lint + 1 : 0, 0, ['secrets', 'keys'])
   }
-  HAS_COVERAGE = cfg.gate.steps.some((g) => g.coverage && (g.coverage.cobertura || g.coverage.json_summary))
-  REVIEWERS = [...cfg.reviewers.always, ...cfg.reviewers.routed].map((r) => [r.id, r.chip || r.id])
+  HAS_COVERAGE = cfg.gate.steps.some((g) => picked.has(g.key) && g.coverage && (g.coverage.cobertura || g.coverage.json_summary))
+  REVIEWERS = stages.filter((s) => role(s) === 'reviewer').map((s) => [s.id, s.chip || s.id])
+  // job.stage while a parallel group runs is the group's first stage, so chips animate for the lead too.
+  GATE_STAGES = new Set(gates.map((s) => s.id))
+  REVIEW_STAGES = new Set()
+  const byId = Object.fromEntries(cfg.loop.stages.map((s) => [s.id, s]))
+  for (const g of groups) {
+    const reviewers = g.filter((id) => role(byId[id]) === 'reviewer')
+    if (reviewers.length) REVIEW_STAGES.add(g[0])
+    reviewers.forEach((id) => REVIEW_STAGES.add(id))
+  }
 
   if (cfg.ui.job_files && cfg.ui.job_files.length) {
     JOB_FILES = cfg.ui.job_files
   } else {
-    const bi = stages.findIndex((s) => s.kind === 'builders')
-    const outputs = (from, to) => stages.slice(from, to).filter((s) => (s.kind === 'agent' || s.kind === 'integrate') && s.output).map((s) => s.output)
+    const bi = stages.findIndex((s) => role(s) === 'builder')
+    const outputs = (from, to) => stages.slice(from, to).filter((s) => (role(s) === 'plain' || role(s) === 'integrator') && s.output).map((s) => s.output)
     JOB_FILES = [
       ...outputs(0, bi < 0 ? stages.length : bi), 'shots/',
-      ...(bi < 0 ? [] : cfg.builders.map((b) => `build-${b.id}.md`)),
+      ...stages.filter((s) => role(s) === 'builder').map((s) => `build-${s.id}.md`),
       ...(bi < 0 ? [] : outputs(bi, stages.length)),
       'pr-title.txt', 'pr.md',
       ...(cfg.connections.tickets.provider === 'jira' ? ['jira-comment.md'] : []),
@@ -550,8 +594,8 @@ function chip(label, value, waiting, title) {
 }
 
 function roundRow(row, stage) {
-  const gateWaiting = row.current && stage === 'gate'
-  const reviewWaiting = row.current && stage === 'review'
+  const gateWaiting = row.current && GATE_STAGES.has(stage)
+  const reviewWaiting = row.current && REVIEW_STAGES.has(stage)
   const g = row.gate || {}
   const cov = typeof g.coverage === 'number' ? `${Math.round(g.coverage)}%` : 'cov'
   let covVal = 'pending'
@@ -622,6 +666,21 @@ function actions(job) {
   return []
 }
 
+// Done and Needs human hold jobs in several states, so their cards say which.
+function stateOf(job) {
+  const st = job.stage || ''
+  if (st === 'deliver') return 'delivering…'
+  if (st === 'ready') return CFG.delivery.mode === 'none' ? 'ready to push' : 'ready to deliver'
+  if (st === 'delivered') return 'delivered'
+  if (st === 'awaiting-deliver') return '⏸ approve delivery'
+  if (st === 'needs-human') return 'needs a human'
+  if (st.startsWith('awaiting-')) {
+    const a = APPROVALS[st.slice('awaiting-'.length)]
+    return `⏸ ${a ? a.title || a.id : st.slice('awaiting-'.length)}`
+  }
+  return ''
+}
+
 function card(job, rows) {
   const live = LIVE.has(job.stage)
   const you = YOU.has(job.stage)
@@ -632,6 +691,9 @@ function card(job, rows) {
     : `<span class="jira">${esc(tk)}</span>`
   const acts = actions(job)
   const roundLabel = job.round ? ` · round ${job.round}/${MAX_ROUNDS}` : ''
+  const state = stateOf(job)
+  const waitingOn = (job.stage || '').startsWith('awaiting-') ? APPROVALS[job.stage.slice('awaiting-'.length)] : null
+  const note = job.note || (waitingOn && waitingOn.note) || ''
   return `
     <div class="card ${live ? 'live' : ''} ${you ? 'you' : ''} ${job.stage === 'ready' ? 'ready' : ''}"
          role="button" tabindex="0" data-job="${esc(job.id)}" aria-label="${esc(job.id)}: ${esc(job.feature)}">
@@ -642,8 +704,9 @@ function card(job, rows) {
       </div>
       <p class="feature">${esc(job.feature)}</p>
       <div class="branch" title="${esc(job.branch)} → ${esc(job.base)}">${esc(job.branch)} → ${esc(job.base)}</div>
+      ${state ? `<div class="state">${esc(state)}</div>` : ''}
       ${live && job.agent ? `<div class="agent">● ${esc(job.agent)}${esc(roundLabel)}</div>` : ''}
-      ${!live && job.note && job.stage !== 'ready' && !job.note.startsWith('/factory') ? `<div class="note">${esc(job.note)}</div>` : ''}
+      ${!live && note && job.stage !== 'ready' && !note.startsWith('/factory') ? `<div class="note">${esc(note)}</div>` : ''}
       ${rows.length ? `<div class="rounds">${rows.map((r) => roundRow(r, job.stage)).join('')}</div>` : ''}
       ${acts.length ? `<div class="actions">${acts.join('')}</div>` : ''}
     </div>`
@@ -660,7 +723,7 @@ async function renderBoard() {
     else byCol[col].push(card(job, rows[i]))
   })
   const html = COLUMNS.map((c) => `
-    <section class="col ${c.cls || ''}" aria-label="${esc(c.label)}">
+    <section class="col ${c.cls || ''}" aria-label="${esc(c.label)}"${c.hue === undefined ? '' : ` style="--ph:${c.hue}"`}>
       <div class="col-head"><h3>${esc(c.label)}</h3><span class="who">${esc(c.who)}</span>
         <span class="count">${byCol[c.key].length || ''}</span></div>
       ${byCol[c.key].reverse().join('') || '<div class="empty">–</div>'}

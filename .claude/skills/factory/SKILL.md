@@ -39,21 +39,25 @@ and every agent: no secret files or env dumps, no data sent off the machine, no 
 ## The loop
 
 ```
-spec-writer → architect → ⏸ approval → test-author → builder-main → gate → reviewers (wait for all) → integrator → deliver: pr (after ⏸ approval)
-fail / CHANGES → back to build (max 3 rounds, then needs-human)
+spec-writer → architect → gate guardrails → ⏸ approval → test-author → builder-main → gate → reviewer-code ∥ reviewer-security (wait for all) → integrator → deliver: pr (after ⏸ approval)
+fail / CHANGES → back to design, main (max 3 rounds, then needs-human)
 ```
 
-| Stage | Kind | Who | Writes (in the job folder) |
-|---|---|---|---|
-| spec | agent | `spec-writer` | `spec.md` |
-| design | agent | `architect` | `design.md` |
-| approval | approval | you (`/factory go`) |  |
-| tests | agent | `test-author` | `tests.md` |
-| build | builders | `builder-main` | `build-main.md` + commits |
-| gate | gate | `factory.py gate`: no steps | `round-<N>/gate.log`, `gate.json` |
-| review | reviewers | code, security | `round-<N>/review-<id>.md` |
-| integrate | integrate | `integrator` | `decision.md` (+ `pr-title.txt`, `pr.md`) |
-| deliver | delivery | `factory.py deliver` (pr, after your approval) |  |
+| Stage | Kind | Phase | Who | Writes (in the job folder) |
+|---|---|---|---|---|
+| spec | agent | plan | `spec-writer` | `spec.md` |
+| design | agent | plan | `architect` | `design.md` |
+| guardrails | gate | review | `factory.py gate`: secrets | `round-<N>/gate.log`, `gate.json` |
+| approval | approval |  | you (`/factory go`) |  |
+| tests | agent | build | `test-author` | `tests.md` |
+| main | builder | build | `builder-main` | `build-main.md` + commits |
+| gate | gate | review | `factory.py gate`: no steps | `round-<N>/gate.log`, `gate.json` |
+| code | reviewer | review | `reviewer-code` | `round-<N>/review-code.md` |
+| security | reviewer | review | `reviewer-security` | `round-<N>/review-security.md` |
+| integrate | integrator | integrate | `integrator` | `decision.md` (+ `pr-title.txt`, `pr.md`) |
+| deliver | delivery |  | `factory.py deliver` (pr, after your approval) |  |
+
+Agents a stage fans out to (`a ∥ b` above) run at the same time, as one step.
 
 `MAX_ROUNDS = 3`. A round is one gate run plus, if it passes, one review round. A failing gate uses up a round.
 
@@ -75,13 +79,13 @@ Run `python3 .factory/factory.py step <job>`. It prints one JSON action. Do what
 - **`"type": "agents"`**: spawn each entry in `agents` with `subagent_type` = its `agent`, named
   its `name`, with its `prompt` verbatim. When `parallel` is true, spawn them all **in one
   message** so they run in parallel, and WAIT FOR ALL.
-  - When `resume` is true and you still have a live agent called `name` from this session, send
-    it the entry's `resume_message` with SendMessage instead of spawning a new one.
-  - Each time a reviewer finishes, run `python3 .factory/factory.py refresh <job>` so its chip
+  - When an entry's `resume` is true and you still have a live agent called `name` from this
+    session, send it the entry's `resume_message` with SendMessage instead of spawning a new one.
+  - When the action's `refresh` is true, each time a reviewer finishes, run `python3 .factory/factory.py refresh <job>` so its chip
     lands on the dashboard straight away.
   - When every agent of the action has finished, run `python3 .factory/factory.py advance <job>`.
 - **`"type": "gate"`**: run `python3 .factory/factory.py gate <job>` (allow up to 20 minutes). It
-  runs the checks, records them, and moves the job on (to review, or back to the builders).
+  runs that gate's checks, records them, and moves the job on (or back to the builders).
 - **`"type": "advance"`**: run `python3 .factory/factory.py advance <job>`.
 - **`"type": "approval"`**: stop. Tell the user the job waits for them, with the `note`, the job
   folder and the dashboard. For `kind: approval` the next step is `/factory go <job>` (or

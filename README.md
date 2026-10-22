@@ -5,10 +5,12 @@
 A configurable version of the Move AI software factories (mocap-desktop, accounts-portal, omnigrid).
 One `factory.yaml` plus markdown agents and skills defines the whole factory:
 
-- the **loop**: stages, approvals, rounds and where failures go back to
-- **agents and skills**: edit, add, clone them from the library
-- **builders and reviewers**: which agents build which areas, and which reviewers a diff needs
-- the **gate**: the deterministic checks run before any reviewer
+- the **loop**: agent, approval and gate blocks, the phase (board column) each agent and gate is
+  in, rounds and where failures go back to
+- **agents and skills**: edit, add, clone them from the library. Every worker in the loop is an
+  agent, and the agent says what it does (writes a file, builds, reviews, integrates)
+- **guardrails**: deterministic checks (secret and PII scans, topic/word and regex rules, your
+  tests and linters); a gate block can sit in any phase and run any of them
 - **connections**: the git host (GitHub, GitLab, Bitbucket) and Jira
 - **delivery**: what happens to a finished branch (nothing, push, PR, or straight onto the base),
   with or without a human approval first
@@ -18,12 +20,16 @@ One `factory.yaml` plus markdown agents and skills defines the whole factory:
 You edit all of it in a local web **studio** or by hand.
 
 ```
-spec-writer → architect → ⏸ approve → test-author → builders (parallel) → gate → reviewers (routed, parallel)
-  → integrator → deliver (none | push | pr | direct, optionally after ⏸ approval)
+Plan:      spec-writer → architect → ⏸ approve
+Build:     test-author → builder-main (more builders: a fan-out, they run in parallel)
+Review:    gate ⇉ reviewer-code ∥ reviewer-security ∥ … (the gate fans out to the reviewers)
+Integrate: integrator → deliver (none | push | pr | direct, optionally after ⏸ approval)
 gate fail / review CHANGES → back to the builders, max N rounds, then needs-human
 ```
 
-Every stage, approval point and reviewer in that loop can be changed or removed.
+Every block in that loop can be changed, moved to another phase or removed, a phase can hold as
+many agents as you like, and you can add phases. The board shows the phases in order, then Done, then
+Needs human, where every approval and anything that needs a person waits.
 
 ## Quick start
 
@@ -32,9 +38,22 @@ uv tool install ".[api]"            # or: uv sync --extra api && uv run factory 
 cd /path/to/your/repo
 factory presets                     # blank, python-qt, react-vite, python-ts-data
 factory init --preset blank         # writes .factory/config/ and renders .claude/ + .factory/
-factory studio                      # edit loop, agents, skills, gate, connections, delivery, runtime
+factory studio                      # edit loop, agents, skills, guardrails, connections, delivery, runtime
 factory doctor                      # config, render drift, git, tickets and runtime checks
 ```
+
+### Starting the studio
+
+```bash
+factory studio                      # or, from a clone: .venv/bin/factory studio / uv run factory studio
+factory studio --port 8765          # pick the port
+factory studio --no-browser         # don't open a browser; open the printed URL yourself
+```
+
+The studio listens on 127.0.0.1 only. Each start mints a new token, carried by the URL it prints
+(Ctrl+C stops it). Run inside a
+project repo, it opens that repo's factory. Run anywhere else, it lists every registered project
+(`factory projects add <path>`). For the jobs board alone, without the editor, run `.factory/ui.sh`.
 
 Then run a job:
 
@@ -96,21 +115,63 @@ The engine (`ajantrik/core/engine.py`) reads the stage list and answers one ques
   `READY|ESCALATE`, `Builders:`). Then it moves the job on, back a round, or to needs-human.
 
 The interactive `/factory` skill and the headless runner both drive this same API, so the loop is
-configuration rather than prose. Stage kinds:
+configuration rather than prose. A loop has three kinds of block:
 
 | kind | does |
 |---|---|
-| `agent` | one agent writes one file in the job folder (spec, design, tests, or anything you add) |
-| `approval` | the job waits at `awaiting-<id>` until a human approves |
-| `builders` | the builders the design picked run in parallel; in later rounds they are resumed with the findings |
-| `gate` | the configured `gate.steps`, plus a built-in secret scan and clean-tree check |
-| `reviewers` | `always` reviewers plus `routed` ones whose path globs, diff patterns or gate metrics match |
-| `integrate` | refuse-path check, integrator writes `decision.md` and the PR text, then an outgoing secret scan |
-| `delivery` | `none`, `push`, `pr` or `direct` (`ff-only` or `squash`), optionally after an approval |
+| `agent` | runs one agent; its `role` says what it writes (below) |
+| `approval` | the job waits at `awaiting-<id>` until a human approves (on the board: Needs human) |
+| `gate` | the guardrails it names (`steps`: `gate.steps` keys and the built-in `secrets` and `clean-tree`; empty = all) |
 
-A failing gate or a review with `CHANGES` sends the job back to the builders stage, or to the
-stage's `on_fail`. Only the builders that own the findings rebuild, when that is known (a reviewer's
-or gate step's `builder`). Once `max_rounds` is used up, the job goes to needs-human.
+| agent role | writes | and then |
+|---|---|---|
+| `plain` | its `output` file (spec, design, tests, or anything you add) | `BLOCKED` on the first line stops the job |
+| `builder` | code commits and `build-<id>.md` | the ones the design picked (`Builders:` line) run; later rounds resume them with the findings |
+| `reviewer` | `round-<N>/review-<id>.md` with `VERDICT: PASS\|CHANGES` | runs always, or only when its path globs, diff patterns or gate metrics match |
+| `integrator` | `decision.md` and the PR text (one at most) | refuse-path check before it, outgoing secret scan after it |
+
+The role comes from the agent: `builder-*` agents build, `reviewer-*` agents review, `integrator`
+integrates and every other agent writes a file. A block's `role` overrides that.
+
+Phases (`loop.phases`) are only board columns, in order: Plan, Build, Review and Integrate by default,
+and you can add your own. An agent block goes in any phase without changing what it does; a gate
+goes in Review unless you put it elsewhere; approvals have no phase. What runs in parallel comes
+from the arrows: a block whose success edge fans out (`next: [a, b]`, or a second arrow drawn in the
+studio) starts `a` and `b` at the same time as one step. Each branch is a single agent, and all
+branches must lead on to the same block (or the same fan-out), where the path joins again. Without a
+fan-out, blocks run one after the other. Delivery
+is not a block: after the last one the job is delivered by `delivery.mode` (`none`, `push`, `pr` or
+`direct` with `ff-only` or `squash`), optionally after an approval.
+
+### Guardrails
+
+A guardrail is a bash command run in the job's worktree (`gate.steps`); it fails the gate with a
+non-zero exit. The studio's Guardrails tab shows the command each one runs. Two are built in: the
+secret scan (`gate.secrets`: every commit on the branch, plus gitleaks when installed) and the
+clean-tree check (`gate.clean_tree`). The library (`library/guardrails.yaml`, "+ From library") adds:
+
+| guardrail | checks the lines the branch adds for |
+|---|---|
+| `pii` | email addresses, phone numbers, US SSNs, payment cards (Luhn) and IBANs (checksum); placeholders such as example.com are ignored |
+| `topics` | named lists of words or phrases (`TOPICS: "codenames: project falcon; banned: …"`), case-insensitive |
+| `regex` | your own patterns (`PATTERNS`, one per line), optionally only in `PATHS` |
+| `large-files` | added or grown files over `LIMIT_KB` |
+| `conflict-markers` | unresolved merge conflict markers |
+| `dependency-audit` | known vulnerabilities, with pip-audit or npm audit when a dependency file changes |
+| `debug-leftovers` | `breakpoint()`, `pdb.set_trace()`, `console.log()`, `debugger` (report only by default) |
+
+The PII, topic and regex scans write findings as file, line, rule and fingerprint, never the matched
+text. To accept a reviewed false positive, add its fingerprint to `.factory/security/allow.txt`.
+
+A failing gate or a reviewer's `CHANGES` sends the job back to its `on_fail` (the default loop sets
+it to the builder), or to the nearest builder before it; with no builder before it, the job goes to a human. Only the builders that own
+the findings rebuild, when that is known (a reviewer's or guardrail's `builder`). A round opens at
+the first gate or reviewer after a build; checks before any builder run in round 0. Once
+`max_rounds` is used up, the job goes to needs-human.
+
+Configs written before phases (`version: 1`, with `builders:` and `reviewers:` teams) still load:
+each builder becomes a build agent and each reviewer a review agent, failures go back to the first
+builder explicitly, and the next save writes version 2.
 
 ## Security
 

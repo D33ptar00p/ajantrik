@@ -20,7 +20,7 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
-from ajantrik.kit.schema import FactoryConfig, warnings
+from ajantrik.kit.schema import FactoryConfig, migrate, warnings
 
 NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 FRONTMATTER = re.compile(r"\A---\n(.*?)\n---\n?(.*)\Z", re.S)
@@ -41,6 +41,26 @@ def presets_dir() -> Path:
 
 def library_dir() -> Path:
     return data_root() / "library"
+
+
+def guardrail_library() -> list[dict[str, Any]]:
+    """The generic guardrails offered in the studio (library/guardrails.yaml), each a gate step plus a title
+    and description. Entries that are not valid gate steps are left out."""
+    from ajantrik.kit.schema import GateStep
+
+    try:
+        data = yaml.safe_load((library_dir() / "guardrails.yaml").read_text()) or []
+    except (OSError, yaml.YAMLError):
+        return []
+    out = []
+    for item in data if isinstance(data, list) else []:
+        step = {k: v for k, v in item.items() if k not in ("title", "description")}
+        try:
+            GateStep.model_validate(step)
+        except ValueError:
+            continue
+        out.append({"title": item.get("title") or step["key"], "description": item.get("description") or "", "step": step})
+    return out
 
 
 def list_presets() -> list[dict[str, str]]:
@@ -183,7 +203,7 @@ class Project:
         data = yaml.safe_load(self.yaml_path.read_text()) or {}
         if not isinstance(data, dict):
             raise ValueError("factory.yaml must be a mapping")
-        return data
+        return migrate(data)  # a version 1 file reads as version 2; the next save writes it that way
 
     def agents(self) -> dict[str, AgentDef]:
         out = {}

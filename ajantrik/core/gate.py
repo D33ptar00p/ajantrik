@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from .routing import changed_paths, merge_base
-from .util import any_match, git, write_json
+from .util import any_match, git, read_json, write_json
 
 
 def _policy(root: Path) -> Any:
@@ -77,18 +77,23 @@ def port_lock(root: Path, enabled: bool):
             fcntl.flock(f, fcntl.LOCK_UN)
 
 
-def run_gate(root: Path, cfg: dict[str, Any], worktree: Path, base: str, out: Path) -> tuple[bool, dict[str, Any]]:
+def run_gate(root: Path, cfg: dict[str, Any], worktree: Path, base: str, out: Path,
+             keys: list[str] | None = None) -> tuple[bool, dict[str, Any]]:
+    """Run the gate steps named by keys (all when None) into out/. A second gate in the same round folder
+    adds to its gate.json and gate.log; `requires` can name a step an earlier gate ran."""
     gcfg = cfg.get("gate") or {}
     out.mkdir(parents=True, exist_ok=True)
     log_path = out / "gate.log"
-    log = log_path.open("w")
+    prior = read_json(out / "gate.json", {}) if keys is not None else {}
+    prior = {k: v for k, v in (prior or {}).items() if k not in ("result", "error", "external_only")}
+    log = log_path.open("a" if prior else "w")
 
     def say(msg: str) -> None:
         log.write(msg + "\n")
         log.flush()
 
-    result: dict[str, Any] = {}
-    steps = gcfg.get("steps") or []
+    result: dict[str, Any] = dict(prior)
+    steps = [s for s in gcfg.get("steps") or [] if keys is None or s["key"] in keys]
     for s in steps:
         result[s["key"]] = "pending"
     try:
@@ -114,7 +119,7 @@ def run_gate(root: Path, cfg: dict[str, Any], worktree: Path, base: str, out: Pa
                 result.update({"secrets": "FAIL", "dirty": False, "error": chk["error"]})
                 return _finish(root, out, log, result, False)
 
-        if gcfg.get("secrets", True):
+        if gcfg.get("secrets", True) and (keys is None or "secrets" in keys):
             say("\n== secrets: secret_scan.sh over the branch's commits")
             scan = root / ".factory" / "security" / "secret_scan.sh"
             r = subprocess.run([str(scan), str(out / "secrets.json"), "--git", str(worktree), base],
@@ -175,11 +180,12 @@ def run_gate(root: Path, cfg: dict[str, Any], worktree: Path, base: str, out: Pa
                     pass
             say(f"{key}: {result[key]}")
         if saw_junit:
-            result["passed"], result["failed"] = passed, failed
+            result["passed"] = passed + (prior.get("passed") or 0)
+            result["failed"] = failed + (prior.get("failed") or 0)
         result.setdefault("coverage", None)
 
         dirty = False
-        if gcfg.get("clean_tree", True):
+        if gcfg.get("clean_tree", True) and (keys is None or "clean-tree" in keys):
             status = git("status", "--porcelain", cwd=worktree, check=False)
             dirty = bool(status)
             if dirty:
