@@ -1,0 +1,94 @@
+# Generic guardrails the studio offers under Guardrails → "+ From library". Adding one copies it into
+# gate.steps, where its command can be read and changed like any other. Each entry is a gate step
+# (key, chip, cmd, when_changed, mode, env, ...) plus a title and a description for the picker.
+# Commands run in the job's worktree with WORKTREE BASE MERGE_BASE OUT REPO FACTORY_DIR CHANGED set.
+- key: pii
+  chip: pii
+  title: PII scan
+  description: >-
+    Personal data added on the branch: email addresses, phone numbers, US social security numbers,
+    payment card numbers (Luhn-checked) and IBANs. Placeholder data (example.com, 555 numbers, test
+    cards) is ignored; accept a reviewed finding by adding its fingerprint to .factory/security/allow.txt.
+  cmd: python3 "$FACTORY_DIR/security/pii_scan.py" --out "$OUT/pii.json" --git "$WORKTREE" "$MERGE_BASE"
+- key: large-files
+  chip: size
+  title: Large files
+  description: Fails when the branch adds or grows a file past LIMIT_KB (5 MB by default).
+  env:
+    LIMIT_KB: "5120"
+  cmd: |
+    fail=0
+    while IFS= read -r f; do
+      [[ -f "$f" ]] || continue
+      kb=$(( $(wc -c < "$f") / 1024 ))
+      if (( kb > LIMIT_KB )); then echo "large-files: $f is ${kb} KB (limit ${LIMIT_KB} KB)"; fail=1; fi
+    done < <(git diff --name-only --diff-filter=AM "$MERGE_BASE" HEAD)
+    exit $fail
+- key: conflict-markers
+  chip: merge
+  title: Conflict markers
+  description: Fails when the branch adds unresolved merge conflict markers.
+  cmd: |
+    if git diff -U0 --no-color "$MERGE_BASE" HEAD | grep -nE '^\+(<{7}|>{7})( |$)|^\+={7}$'; then
+      echo "conflict-markers: unresolved merge conflict markers added"
+      exit 1
+    fi
+- key: dependency-audit
+  chip: deps
+  title: Dependency audit
+  description: >-
+    Known vulnerabilities in dependencies, with pip-audit (requirements.txt) and npm audit
+    (package-lock.json, high and above), whichever is installed. Runs only when a dependency file changes.
+  when_changed: ["requirements*.txt", "pyproject.toml", "package.json", "package-lock.json"]
+  timeout_min: 10
+  cmd: |
+    ran=0
+    if [[ -f requirements.txt ]] && command -v pip-audit >/dev/null; then
+      ran=1; pip-audit --progress-spinner off -r requirements.txt || exit 1
+    fi
+    if [[ -f package-lock.json ]] && command -v npm >/dev/null; then
+      ran=1; npm audit --audit-level=high --omit=dev || exit 1
+    fi
+    [[ $ran == 1 ]] || echo "dependency-audit: no pip-audit or npm lockfile here; nothing audited"
+- key: debug-leftovers
+  chip: debug
+  title: Debug leftovers
+  mode: report
+  description: >-
+    Added breakpoint(), pdb.set_trace(), console.log() and debugger statements. Reports only by
+    default; set the mode to gate to fail on them.
+  cmd: |
+    if git diff -U0 --no-color "$MERGE_BASE" HEAD -- '*.py' '*.js' '*.jsx' '*.ts' '*.tsx' \
+        | grep -nE '^\+.*(\bbreakpoint\(\)|pdb\.set_trace\(|console\.log\(|\bdebugger;)'; then
+      echo "debug-leftovers: debug statements added"
+      exit 1
+    fi
+- key: topics
+  chip: topics
+  title: Topic / word guardrail
+  description: >-
+    Named lists of words or phrases that must not be added, e.g. competitor names, internal
+    codenames or profanity. Set TOPICS as "name: word, phrase; other: word". Matches are
+    case-insensitive on word boundaries; the matched text is never written to the log.
+  env:
+    TOPICS: "codenames: project falcon, skunkworks; banned: lorem ipsum"
+  cmd: |
+    python3 "$FACTORY_DIR/security/content_scan.py" --out "$OUT/topics.json" --git "$WORKTREE" "$MERGE_BASE" \
+      --topics "$TOPICS"
+- key: regex
+  chip: regex
+  title: Regex guardrail
+  description: >-
+    Your own patterns that must not appear in added lines: Python regexes, one per line in PATTERNS
+    (use (?i) for case-insensitive). PATHS (space separated globs) limits which files are checked.
+  env:
+    PATTERNS: |-
+      (?i)do not commit
+      https?://[\w.-]*\.internal\b
+    PATHS: ""
+  cmd: |
+    args=()
+    set -f  # PATHS holds globs for the scanner, not for the shell
+    for g in $PATHS; do args+=(--path "$g"); done
+    python3 "$FACTORY_DIR/security/content_scan.py" --out "$OUT/regex.json" --git "$WORKTREE" "$MERGE_BASE" \
+      --regex "$PATTERNS" "${args[@]}"

@@ -34,8 +34,8 @@ from typing import Any
 from ajantrik.core.connections import tickets as tix
 from ajantrik.core.util import FactoryError
 from ajantrik.kit import workspace
-from ajantrik.kit.project import AgentDef, Project, SkillDef, library_dir, list_presets
-from ajantrik.kit.schema import FactoryConfig
+from ajantrik.kit.project import AgentDef, Project, SkillDef, guardrail_library, library_dir, list_presets
+from ajantrik.kit.schema import BUILTIN_GUARDRAILS, FactoryConfig
 from ajantrik.kit.workspace import Registry
 
 WEB = Path(__file__).resolve().parent / "web"
@@ -78,7 +78,7 @@ def _cli(root: Path, args: list[str], env: dict[str, str] | None = None, timeout
     return out
 
 
-def _library() -> dict[str, list[dict[str, str]]]:
+def _library() -> dict[str, list[dict[str, Any]]]:
     lib = library_dir()
     agents, skills = [], []
     for f in sorted((lib / "agents").glob("*.md")) if (lib / "agents").is_dir() else []:
@@ -93,7 +93,10 @@ def _library() -> dict[str, list[dict[str, str]]]:
             skills.append({"name": f.parent.name, "description": s.description})
         except ValueError:
             continue
-    return {"agents": agents, "skills": skills}
+    guardrails = [{**g, "builtin": False} for g in guardrail_library()]
+    builtins = [{"key": k, "title": b["title"], "description": b["description"], "flag": b["flag"], "cmd": b["cmd"],
+                 "builtin": True} for k, b in BUILTIN_GUARDRAILS.items()]
+    return {"agents": agents, "skills": skills, "guardrails": guardrails, "builtin_guardrails": builtins}
 
 
 class Studio:

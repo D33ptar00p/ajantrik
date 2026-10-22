@@ -113,13 +113,10 @@ class Runner:
 
     async def run_agents(self, job: dict[str, Any], action: dict[str, Any]) -> None:
         sem = asyncio.Semaphore(self.cfg.runtime.concurrency if action.get("parallel") else 1)
-        reviewers = self.engine.current(job)[0]
-        is_review = bool(reviewers and reviewers["kind"] == "reviewers")
-
         async def one(spec: dict[str, Any]) -> AgentResult:
             async with sem:
-                r = await self.run_agent(job, spec, bool(action.get("resume")))
-            if is_review:
+                r = await self.run_agent(job, spec, bool(spec.get("resume", action.get("resume"))))
+            if action.get("refresh"):
                 self.engine.refresh(job["id"])
             return r
 

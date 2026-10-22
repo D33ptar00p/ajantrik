@@ -1,4 +1,4 @@
-version: 1
+version: 2
 repo:
   name: omnigrid
   title: OmniGrid Software Factory
@@ -15,12 +15,14 @@ loop:
   - id: spec
     kind: agent
     title: Spec
+    phase: plan
     agent: spec-writer
     output: spec.md
     rerun_on_rework: scope
   - id: design
     kind: agent
     title: Design
+    phase: plan
     agent: architect
     output: design.md
     read_builders: true
@@ -32,47 +34,66 @@ loop:
   - id: tests
     kind: agent
     title: Tests
+    phase: build
+    next:
+    - pipeline
+    - web
     agent: test-author
     output: tests.md
-  - id: build
-    kind: builders
-    title: Build
+  - id: pipeline
+    kind: agent
+    title: pipeline
+    phase: build
+    role: builder
+    next: gate
+    area_globs:
+    - pipeline/
+    - tests/
+    - DATA_SOURCES.md
+    description: Python data pipeline (sources, schema, normalise, data/dist outputs), tests and DATA_SOURCES.md
+  - id: web
+    kind: agent
+    title: web
+    phase: build
+    role: builder
+    area_globs:
+    - web/src/
+    - web/index.html
+    description: web app (vanilla TypeScript on Vite with MapLibre GL, panels, legend, styles)
   - id: gate
     kind: gate
-    title: Gate
-  - id: review
-    kind: reviewers
-    title: Review
-  - id: integrate
-    kind: integrate
-    title: Integrate
-    agent: integrator
-  - id: deliver
-    kind: delivery
-    title: Deliver
-builders:
-- id: pipeline
-  agent: builder-pipeline
-  description: Python data pipeline (sources, schema, normalise, data/dist outputs), tests and DATA_SOURCES.md
-  area_globs:
-  - pipeline/
-  - tests/
-  - DATA_SOURCES.md
-- id: web
-  agent: builder-web
-  description: web app (vanilla TypeScript on Vite with MapLibre GL, panels, legend, styles)
-  area_globs:
-  - web/src/
-  - web/index.html
-reviewers:
-  always:
+    title: Guardrails
+    phase: guardrails
+    next:
+    - code
+    - security
+    - provenance
+    - deploy
+    - ui
+    - ux
+    on_fail: pipeline
   - id: code
+    kind: agent
+    title: code
+    phase: review
+    role: reviewer
+    next: integrate
+    on_fail: pipeline
   - id: security
-    chip: sec
-  routed:
+    kind: agent
+    title: security
+    phase: review
+    role: reviewer
+    next: integrate
+    on_fail: pipeline
   - id: provenance
+    kind: agent
+    title: provenance
+    phase: review
+    role: reviewer
+    next: integrate
+    on_fail: pipeline
     chip: prov
-    builder: pipeline
     path_globs:
     - pipeline/sources/
     - pipeline/provenance.py
@@ -87,9 +108,15 @@ reviewers:
     - web/src/panels/about.ts
     diff_patterns:
     - (?i)licen|attribution|cited|kind\.|modelled|estimate|impute|registry
+    builder: pipeline
   - id: deploy
+    kind: agent
+    title: deploy
+    phase: review
+    role: reviewer
+    next: integrate
+    on_fail: pipeline
     chip: dep
-    builder: web
     path_globs:
     - deploy.sh
     - web/vite.config.ts
@@ -106,16 +133,33 @@ reviewers:
     metrics:
     - key: data_mb_delta
       gt: 1.0
+    builder: web
   - id: ui
-    builder: web
+    kind: agent
+    title: ui
+    phase: review
+    role: reviewer
+    next: integrate
+    on_fail: pipeline
     path_globs:
     - web/src/
     - web/index.html
+    builder: web
   - id: ux
-    builder: web
+    kind: agent
+    title: ux
+    phase: review
+    role: reviewer
+    on_fail: pipeline
     path_globs:
     - web/src/
     - web/index.html
+    builder: web
+  - id: integrate
+    kind: agent
+    title: Integrate
+    phase: integrate
+    agent: integrator
 gate:
   timeout_min: 20
   setup:
@@ -258,7 +302,6 @@ security:
     external_services: every external service
 ui:
   port: 8000
-  build_label: pipeline ∥ web
   job_files:
   - spec.md
   - design.md

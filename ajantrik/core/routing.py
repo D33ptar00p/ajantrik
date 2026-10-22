@@ -1,4 +1,4 @@
-"""Which reviewers a diff needs, and which builder a finding belongs to. Deterministic, from config.
+"""Which reviewers a diff needs. Deterministic, from config.
 
 The hand-written factories asked the orchestrator to apply these rules by reading the diff; here
 they are code, so every runtime routes the same way and the rules can be tested.
@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from .graph import role_of
 from .util import any_match, git, glob_match
 
 
@@ -38,12 +39,22 @@ def added_lines(worktree: Path, base: str) -> dict[str, list[str]]:
     return out
 
 
+def reviewer_stages(cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    return [s for s in cfg["loop"]["stages"] if role_of(s) == "reviewer"]
+
+
+def is_routed(r: dict[str, Any]) -> bool:
+    """A reviewer with triggers runs only when one matches; one without any always runs."""
+    return bool(r.get("path_globs") or r.get("diff_patterns") or r.get("scoped_patterns") or r.get("metrics"))
+
+
 def route_reviewers(cfg: dict[str, Any], paths: list[str], added: dict[str, list[str]],
-                    gate: dict[str, Any] | None = None) -> dict[str, str]:
-    """reviewer id -> reason it runs, or "" when routing says it does not apply."""
-    rv = cfg.get("reviewers") or {}
-    out = {r["id"]: "always" for r in rv.get("always", [])}
-    for r in rv.get("routed", []):
+                    gate: dict[str, Any] | None = None,
+                    reviewers: list[dict[str, Any]] | None = None) -> dict[str, str]:
+    """reviewer stage id -> reason it runs, or "" when routing says it does not apply."""
+    rvs = reviewer_stages(cfg) if reviewers is None else reviewers
+    out = {r["id"]: "always" for r in rvs if not is_routed(r)}
+    for r in [r for r in rvs if is_routed(r)]:
         skip = set(any_match(list(added), r.get("exclude_globs") or []))
         all_added = [(p, ln) for p, lines in added.items() if p not in skip for ln in lines]
         reason = ""
@@ -74,21 +85,6 @@ def route_reviewers(cfg: dict[str, Any], paths: list[str], added: dict[str, list
                     break
         out[r["id"]] = reason
     return out
-
-
-def reviewer_agent(cfg: dict[str, Any], rid: str) -> str:
-    rv = cfg.get("reviewers") or {}
-    for r in [*rv.get("always", []), *rv.get("routed", [])]:
-        if r["id"] == rid:
-            return r.get("agent") or f"reviewer-{rid}"
-    return f"reviewer-{rid}"
-
-
-def builders_for_paths(cfg: dict[str, Any], paths: list[str]) -> list[str]:
-    """Builders whose area covers any of these paths; all builders when none claims them."""
-    builders = cfg.get("builders") or []
-    hit = [b["id"] for b in builders if any_match(paths, b.get("area_globs") or [])]
-    return hit or [b["id"] for b in builders]
 
 
 def refused(cfg: dict[str, Any], paths: list[str], added: dict[str, list[str]]) -> str:

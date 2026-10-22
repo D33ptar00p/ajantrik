@@ -18,7 +18,7 @@ from ajantrik.core.routing import refused, route_reviewers
 from ajantrik.core.util import FactoryError, glob_match
 from ajantrik.kit.project import Project, list_presets
 from ajantrik.kit.render import render
-from ajantrik.kit.schema import FactoryConfig, warnings
+from ajantrik.kit.schema import FactoryConfig, migrate, warnings
 
 from .conftest import sh
 
@@ -35,25 +35,145 @@ def cfg(**kw) -> FactoryConfig:
 # ---- schema ------------------------------------------------------------------------------------------
 def test_defaults_are_the_hand_built_loop():
     c = cfg()
-    assert [s.id for s in c.loop.stages] == ["spec", "design", "approval", "tests", "build", "gate", "review",
-                                              "integrate", "deliver"]
+    assert c.version == 2
+    assert [s.id for s in c.loop.stages] == ["spec", "design", "approval", "tests", "main", "gate", "code",
+                                              "security", "integrate"]
+    assert [(p.id, p.title) for p in c.loop.phases] == [
+        ("plan", "Plan"), ("build", "Build"), ("guardrails", "Guardrails"), ("review", "Review"), ("integrate", "Integrate")]
+    assert c.stage("gate").next == ["code", "security"]  # type: ignore[union-attr]  # the edges fan out
+    assert [[s.id for s in g] for g in c.loop.groups()] == [
+        ["spec"], ["design"], ["approval"], ["tests"], ["main"], ["gate"], ["code", "security"], ["integrate"]]
+    tests, main = c.stage("tests"), c.stage("main")
+    assert tests and tests.phase == "build" and tests.role == "plain"  # test-author writes tests.md
+    assert main and main.role == "builder" and main.agent == "builder-main"
+    sec = c.stage("security")
+    assert sec and sec.role == "reviewer" and sec.agent == "reviewer-security" and sec.chip == "sec" and not sec.routed
+    assert [(s.id, s.on_fail) for s in c.loop.stages if s.on_fail] == [
+        ("gate", "main"), ("code", "main"), ("security", "main")]  # the failure loops are part of the default
+    integrate = c.stage("integrate")
+    assert integrate and integrate.role == "integrator" and integrate.output == "decision.md"
     assert c.repo.title == "x Software Factory" and c.delivery.mode == "none"
 
 
 @pytest.mark.parametrize("stages, message", [
-    ([{"id": "deliver", "kind": "delivery"}, {"id": "spec", "kind": "agent", "agent": "a"}], "must be last"),
-    ([{"id": "gate", "kind": "gate"}], "need a builders stage"),
-    ([{"id": "b", "kind": "builders"}, {"id": "g", "kind": "gate", "on_fail": "z"}], "not a stage"),
-    ([{"id": "b", "kind": "builders"}, {"id": "g", "kind": "gate", "on_fail": "x"},
-      {"id": "x", "kind": "agent", "agent": "x"}], "earlier stage"),
+    ([{"id": "deliver", "kind": "approval"}], "reserved"),
+    ([{"id": "g", "kind": "gate", "on_fail": "z"}], "not a stage"),
+    ([{"id": "g", "kind": "gate", "on_fail": "x"}, {"id": "x", "kind": "agent", "agent": "x"}], "earlier stage"),
     ([{"id": "a", "kind": "agent", "agent": "x"}, {"id": "a", "kind": "approval"}], "duplicate"),
     ([{"id": "ready", "kind": "approval"}], "reserved"),
     ([{"id": "Bad Id", "kind": "approval"}], "kebab"),
     ([{"id": "a", "kind": "agent"}], "needs `agent`"),
+    ([{"id": "a", "kind": "agent", "agent": "x", "phase": "nope"}], "not in loop.phases"),
+    ([{"id": "a", "kind": "agent", "role": "builder", "output": "a.md"}], "writes its own file"),
+    ([{"id": "a", "kind": "gate", "role": "builder"}], "for agent stages"),
+    ([{"id": "g", "kind": "gate", "steps": ["lint"]}], "unknown steps"),
+    ([{"id": "a", "kind": "agent", "agent": "x", "area_globs": ["src/"]}], "for builders"),
+    ([{"id": "a", "kind": "agent", "role": "builder", "phase": "build", "path_globs": ["src/"]}], "for reviewers"),
+    ([{"id": "a", "kind": "agent", "phase": "build", "output": "a.md", "agent": "x", "area_globs": ["src/"]}],
+     "for builders"),
+    ([{"id": "r", "kind": "agent", "role": "reviewer", "phase": "review", "builder": "zz"}], "not a builder stage"),
+    ([{"id": "a", "kind": "approval", "phase": "build"}], "Needs human"),
+    ([{"id": "a", "kind": "approval", "agent": "x"}], "for agent stages"),
+    ([{"id": "a", "kind": "agent", "agent": "x", "on_fail": "a"}], "only gate and reviewer"),
+    ([{"id": "i", "kind": "agent", "role": "integrator", "phase": "integrate", "agent": "x"},
+      {"id": "j", "kind": "agent", "role": "integrator", "phase": "integrate", "agent": "x"}], "at most one integrate"),
 ])
 def test_loop_rules(stages, message):
     with pytest.raises(ValidationError, match=message):
         cfg(loop={"stages": stages})
+
+
+def test_a_gate_can_sit_in_any_phase_with_its_own_steps():
+    c = cfg(gate={"steps": [{"key": "lint", "cmd": "true"}, {"key": "unit", "cmd": "true"}]},
+            loop={"stages": [
+                {"id": "spec", "kind": "agent", "agent": "spec-writer"},
+                {"id": "lint-early", "kind": "gate", "phase": "plan", "steps": ["lint"], "next": ["a", "b"]},
+                {"id": "a", "kind": "agent", "role": "builder", "phase": "build", "next": "gate"},
+                {"id": "b", "kind": "agent", "role": "builder", "phase": "build"},
+                {"id": "gate", "kind": "gate"},
+            ]})
+    assert [[s.id for s in g] for g in c.loop.groups()] == [["spec"], ["lint-early"], ["a", "b"], ["gate"]]
+    assert c.stage("spec").phase == "plan" and c.stage("gate").phase == "guardrails"  # type: ignore[union-attr]
+    assert any("lint-early: no builder before it" in w for w in warnings(c))
+
+
+def test_phases_are_only_board_columns():
+    c = cfg(loop={"phases": [{"id": "plan"}, {"id": "build", "parallel": True}, {"id": "qa-checks"}], "stages": [
+        {"id": "spec", "kind": "agent", "agent": "spec-writer"},
+        {"id": "a", "kind": "agent", "agent": "builder-a", "phase": "build"},
+        {"id": "b", "kind": "agent", "role": "builder", "phase": "qa-checks"},
+        {"id": "g", "kind": "gate"}]})
+    assert [(p.id, p.title) for p in c.loop.phases] == [("plan", "Plan"), ("build", "Build"), ("qa-checks", "Qa checks")]
+    # what a stage does comes from its agent (or role), not its phase; phases default to the first / review / last
+    assert [(s.id, s.phase, s.role) for s in c.loop.stages] == [
+        ("spec", "plan", "plain"), ("a", "build", "builder"), ("b", "qa-checks", "builder"), ("g", "qa-checks", None)]
+    assert [[s.id for s in g] for g in c.loop.groups()] == [["spec"], ["a"], ["b"], ["g"]]  # no fan-out
+    with pytest.raises(ValidationError, match="duplicate phases"):
+        cfg(loop={"phases": [{"id": "plan"}, {"id": "plan"}]})
+    with pytest.raises(ValidationError, match=r"not in loop\.phases"):
+        cfg(loop={"phases": [{"id": "plan"}], "stages": [{"id": "a", "kind": "agent", "agent": "x", "phase": "nope"}]})
+    with pytest.raises(ValidationError, match="at least one phase"):
+        cfg(loop={"phases": []})
+
+
+@pytest.mark.parametrize("stages, message", [
+    ([{"id": "s", "kind": "agent", "agent": "x", "next": ["a", "g"]}, {"id": "a", "kind": "agent", "role": "builder", "phase": "build",
+      "next": "end"}, {"id": "g", "kind": "gate"}], "only agents run in parallel"),
+    ([{"id": "s", "kind": "agent", "agent": "x", "next": ["a", "b"]}, {"id": "a", "kind": "agent", "role": "builder", "phase": "build",
+      "next": "end"}, {"id": "b", "kind": "agent", "role": "builder", "phase": "build"}, {"id": "c", "kind": "agent", "agent": "x"}],
+     "must all lead to the same next stage"),
+    ([{"id": "s", "kind": "agent", "agent": "x", "next": ["a", "end"]}, {"id": "a", "kind": "agent", "agent": "x"}],
+     "distinct stages"),
+])
+def test_fan_out_rules(stages, message):
+    with pytest.raises(ValidationError, match=message):
+        cfg(loop={"stages": stages})
+
+
+def test_a_fan_out_can_lead_straight_into_another():
+    c = cfg(loop={"stages": [
+        {"id": "s", "kind": "agent", "agent": "x", "next": ["a", "b"]},
+        {"id": "a", "kind": "agent", "role": "builder", "phase": "build", "next": ["c", "d"]},
+        {"id": "b", "kind": "agent", "role": "builder", "phase": "build", "next": ["c", "d"]},
+        {"id": "c", "kind": "agent", "role": "reviewer", "phase": "review", "next": "end"},
+        {"id": "d", "kind": "agent", "role": "reviewer", "phase": "review"}]})
+    assert [[s.id for s in g] for g in c.loop.groups()] == [["s"], ["a", "b"], ["c", "d"]]
+
+
+def test_version_1_configs_become_agents_in_phases():
+    v1 = {"repo": {"name": "x"}, "version": 1,
+          "builders": [{"id": "py", "area_globs": ["app/"]}, {"id": "ui", "agent": "builder-front"}],
+          "reviewers": {"always": ["code"], "routed": [
+              {"id": "ui", "path_globs": ["web/"], "builder": "ui"}]},
+          "gate": {"steps": [{"key": "unit", "cmd": "true", "builder": "py"}]},
+          "ui": {"build_label": "py ∥ ui"},
+          "loop": {"stages": [
+              {"id": "spec", "kind": "agent", "agent": "spec-writer", "output": "spec.md"},
+              {"id": "approval", "kind": "approval"},
+              {"id": "build", "kind": "builders", "title": "Build"},
+              {"id": "gate", "kind": "gate"},
+              {"id": "review", "kind": "reviewers", "on_fail": "build"},
+              {"id": "integrate", "kind": "integrate", "agent": "integrator"},
+              {"id": "deliver", "kind": "delivery"}]}}
+    data = migrate(v1)
+    assert "builders" not in data and "reviewers" not in data and "build_label" not in data["ui"]
+    assert v1["gate"]["steps"][0]["builder"] == "py"  # the input is not changed
+    c = FactoryConfig.model_validate(v1)
+    assert c.loop.order() == ["spec", "approval", "py", "ui", "gate", "code", "review-ui", "integrate"]
+    assert [[s.id for s in g] for g in c.loop.groups()] == [
+        ["spec"], ["approval"], ["py", "ui"], ["gate"], ["code", "review-ui"], ["integrate"]]
+    assert c.stage("approval").next == ["py", "ui"] and c.stage("py").next == "gate"  # type: ignore[union-attr]
+    assert [c.stage(i).phase for i in ("spec", "py", "gate", "code")] == ["plan", "build", "guardrails", "review"]  # type: ignore[union-attr]
+    ui = c.stage("ui")
+    assert ui and ui.role == "builder" and ui.agent == "builder-front"
+    rui = c.stage("review-ui")
+    assert rui and rui.role == "reviewer" and rui.agent == "reviewer-ui" and rui.chip == "ui" and rui.builder == "ui"
+    assert rui.on_fail == "py" and rui.routed
+    assert c.stage("gate").on_fail == "py" and c.stage("code").on_fail == "py"  # type: ignore[union-attr]
+    assert c.gate.steps[0].builder == "py"
+    integrate = c.stage("integrate")
+    assert integrate and integrate.role == "integrator" and integrate.output == "decision.md"
+    assert FactoryConfig.model_validate(c.model_dump()) == c  # version 2 is left alone
 
 
 def test_credentials_must_be_references():
@@ -76,8 +196,9 @@ def test_warnings_for_risky_choices():
 
 
 def test_minimal_loop_without_gate_or_reviewers():
-    c = cfg(loop={"stages": [{"id": "build", "kind": "builders"}, {"id": "ship", "kind": "delivery"}]})
+    c = cfg(loop={"stages": [{"id": "main", "kind": "agent", "role": "builder", "phase": "build"}]})
     assert any("no gate" in w for w in warnings(c))
+    assert any("no review agent" in w for w in warnings(c))
 
 
 # ---- routing ------------------------------------------------------------------------------------------
@@ -108,7 +229,7 @@ def test_routing_exclusions_metrics_and_refusals(tmp_path):
     p.init_from_preset("react-vite")
     c = p.load().cfg.model_dump()  # type: ignore[union-attr]
     r = route_reviewers(c, ["src/components/__tests__/Button.test.tsx"], {})
-    assert not r["ui"] and not r["ux"]
+    assert not r["review-ui"] and not r["ux"]
     assert refused(c, ["package.json"], {"package.json": ['    "postinstall": "node x.js",']})
     assert not refused(c, ["package.json"], {"package.json": ['    "lodash": "^4.17.21",']})
     p2 = Project(tmp_path / "og")
@@ -187,7 +308,8 @@ def test_render_keeps_user_settings_and_human_files(git_repo, factory):
 def test_removed_agents_are_cleaned_up_unless_edited(git_repo, factory):
     p = factory()
     data = p.raw()
-    data["reviewers"]["always"] = [{"id": "code"}]
+    data["loop"]["stages"] = [s for s in data["loop"]["stages"] if s["id"] != "security"]
+    next(s for s in data["loop"]["stages"] if s["id"] == "gate")["next"] = "code"
     p.yaml_path.write_text(yaml.safe_dump(data))
     p.delete_agent("reviewer-security")
     res = render(p)
@@ -369,7 +491,7 @@ def test_next_edges_set_the_run_order_not_the_list():
     from ajantrik.core.engine import Engine  # noqa: F401  (engine and schema share ajantrik.core.graph)
 
     c = cfg(loop={"start": "a", "stages": [
-        {"id": "b", "kind": "builders", "next": "g"},
+        {"id": "b", "kind": "agent", "role": "builder", "phase": "build", "next": "g"},
         {"id": "a", "kind": "agent", "agent": "x", "next": "b"},
         {"id": "g", "kind": "gate", "next": "end"},
         {"id": "lonely", "kind": "agent", "agent": "y"},
@@ -383,8 +505,6 @@ def test_next_edges_set_the_run_order_not_the_list():
                  {"id": "b", "kind": "agent", "agent": "x", "next": "a"}]}, "loop back"),
     ({"stages": [{"id": "a", "kind": "agent", "agent": "x", "next": "zz"}]}, "not a stage"),
     ({"start": "zz", "stages": [{"id": "a", "kind": "agent", "agent": "x"}]}, "loop.start"),
-    ({"stages": [{"id": "d", "kind": "delivery", "next": "a"}, {"id": "a", "kind": "agent", "agent": "x"}]},
-     "must be last"),
     ({"stages": [{"id": "end", "kind": "approval"}]}, "reserved"),
 ])
 def test_graph_rules(loop, message):
@@ -398,7 +518,7 @@ def test_engine_follows_success_edges(git_repo, factory):
     stages = [{"id": "design", "kind": "agent", "agent": "architect", "output": "design.md", "next": "end"},
               {"id": "spec", "kind": "agent", "agent": "spec-writer", "output": "spec.md", "next": "design",
                "pos": {"x": 10, "y": 20}}]
-    factory(loop={"start": "spec", "stages": stages}, builders=[{"id": "main"}])
+    factory(loop={"start": "spec", "stages": stages})
     eng = Engine(git_repo)
     assert eng.order == ["spec", "design"]
     job = eng.new_job("Add a multiply function", skip_preflight=True)

@@ -1,4 +1,4 @@
-version: 1
+version: 2
 repo:
   name: accounts-portal
   title: Accounts Portal Software Factory
@@ -15,12 +15,14 @@ loop:
   - id: spec
     kind: agent
     title: Spec
+    phase: plan
     agent: spec-writer
     output: spec.md
     rerun_on_rework: scope
   - id: design
     kind: agent
     title: Design
+    phase: plan
     agent: architect
     output: design.md
     read_builders: true
@@ -32,57 +34,77 @@ loop:
   - id: tests
     kind: agent
     title: Tests
+    phase: build
+    next:
+    - data
+    - ui
     agent: test-author
     output: tests.md
-  - id: build
-    kind: builders
-    title: Build
+  - id: data
+    kind: agent
+    title: data
+    phase: build
+    role: builder
+    next: gate
+    area_globs:
+    - src/contexts/
+    - src/utils/
+    - src/types/
+    - src/redux/
+    - src/auth/
+    - src/navigation/
+    - src/instrumentation/
+    - .env.example
+    - '*.config.*'
+    - tsconfig*.json
+    description: contexts, hooks, utils, types, redux, auth, navigation, instrumentation and config
+  - id: ui
+    kind: agent
+    title: ui
+    phase: build
+    role: builder
+    area_globs:
+    - src/pages/
+    - src/components/
+    - src/layouts/
+    - src/drawer/
+    - src/theme/
+    - src/assets/
+    - cypress/
+    description: pages, components, layouts, drawer, theme, assets and Cypress specs
   - id: gate
     kind: gate
-    title: Gate
-  - id: review
-    kind: reviewers
-    title: Review
-  - id: integrate
-    kind: integrate
-    title: Integrate
-    agent: integrator
-  - id: deliver
-    kind: delivery
-    title: Deliver
-builders:
-- id: data
-  agent: builder-data
-  description: contexts, hooks, utils, types, redux, auth, navigation, instrumentation and config
-  area_globs:
-  - src/contexts/
-  - src/utils/
-  - src/types/
-  - src/redux/
-  - src/auth/
-  - src/navigation/
-  - src/instrumentation/
-  - .env.example
-  - '*.config.*'
-  - tsconfig*.json
-- id: ui
-  agent: builder-ui
-  description: pages, components, layouts, drawer, theme, assets and Cypress specs
-  area_globs:
-  - src/pages/
-  - src/components/
-  - src/layouts/
-  - src/drawer/
-  - src/theme/
-  - src/assets/
-  - cypress/
-reviewers:
-  always:
+    title: Guardrails
+    phase: guardrails
+    next:
+    - code
+    - security
+    - billing
+    - platform
+    - review-ui
+    - ux
+    on_fail: data
   - id: code
+    kind: agent
+    title: code
+    phase: review
+    role: reviewer
+    next: integrate
+    on_fail: data
   - id: security
-    chip: sec
-  routed:
+    kind: agent
+    title: security
+    phase: review
+    role: reviewer
+    next: integrate
+    on_fail: data
   - id: billing
+    kind: agent
+    title: billing
+    phase: review
+    role: reviewer
+    next: integrate
+    on_fail: data
     chip: bill
     path_globs:
     - src/pages/subscription/
@@ -105,8 +127,13 @@ reviewers:
     diff_patterns:
     - (?i)stripe|checkout|price|credit|seat|currency|invoice|unit_amount
   - id: platform
+    kind: agent
+    title: platform
+    phase: review
+    role: reviewer
+    next: integrate
+    on_fail: data
     chip: plat
-    builder: data
     path_globs:
     - vite.config.ts
     - amplify.yml
@@ -127,8 +154,15 @@ reviewers:
     diff_patterns:
     - import\.meta\.env|posthog|datadogRum|TagManager
     - https://
-  - id: ui
-    builder: ui
+    builder: data
+  - id: review-ui
+    kind: agent
+    title: ui
+    phase: review
+    next: integrate
+    agent: reviewer-ui
+    on_fail: data
+    chip: ui
     path_globs:
     - src/pages/*.tsx
     - src/components/*.tsx
@@ -140,8 +174,13 @@ reviewers:
     exclude_globs:
     - __test__/
     - __tests__/
+    builder: ui
   - id: ux
-    builder: ui
+    kind: agent
+    title: ux
+    phase: review
+    role: reviewer
+    on_fail: data
     path_globs:
     - src/pages/*.tsx
     - src/components/*.tsx
@@ -153,6 +192,12 @@ reviewers:
     exclude_globs:
     - __test__/
     - __tests__/
+    builder: ui
+  - id: integrate
+    kind: agent
+    title: Integrate
+    phase: integrate
+    agent: integrator
 gate:
   timeout_min: 10
   setup:
@@ -275,7 +320,6 @@ security:
     pattern: '"(preinstall|install|postinstall|prepare)"\s*:'
 ui:
   port: 8000
-  build_label: data ∥ ui
   job_files:
   - spec.md
   - design.md

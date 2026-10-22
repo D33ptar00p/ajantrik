@@ -1,4 +1,4 @@
-version: 1
+version: 2
 repo:
   name: mocap-desktop-gui
   title: Genesis Post Software Factory
@@ -15,12 +15,14 @@ loop:
   - id: spec
     kind: agent
     title: Spec
+    phase: plan
     agent: spec-writer
     output: spec.md
     rerun_on_rework: scope
   - id: design
     kind: agent
     title: Design
+    phase: plan
     agent: architect
     output: design.md
     read_builders: true
@@ -32,46 +34,65 @@ loop:
   - id: tests
     kind: agent
     title: Tests
+    phase: build
+    next:
+    - py
+    - qml
     agent: test-author
     output: tests.md
-  - id: build
-    kind: builders
-    title: Build
+  - id: py
+    kind: agent
+    title: py
+    phase: build
+    role: builder
+    next: gate
+    area_globs:
+    - mocap_desktop_gui/
+    - tests/
+    description: Python side (models, controllers, workers, Qt properties/signals/slots, tests)
+  - id: qml
+    kind: agent
+    title: qml
+    phase: build
+    role: builder
+    area_globs:
+    - pyside_rc/
+    - mocap_desktop_gui/gen/
+    - '*.qrc'
+    description: QML side (views, components, icons, the qrc and the generated rc_*.py)
   - id: gate
     kind: gate
-    title: Gate
-  - id: review
-    kind: reviewers
-    title: Review
-  - id: integrate
-    kind: integrate
-    title: Integrate
-    agent: integrator
-  - id: deliver
-    kind: delivery
-    title: Deliver
-builders:
-- id: py
-  agent: builder-py
-  description: Python side (models, controllers, workers, Qt properties/signals/slots, tests)
-  area_globs:
-  - mocap_desktop_gui/
-  - tests/
-- id: qml
-  agent: builder-qml
-  description: QML side (views, components, icons, the qrc and the generated rc_*.py)
-  area_globs:
-  - pyside_rc/
-  - mocap_desktop_gui/gen/
-  - '*.qrc'
-reviewers:
-  always:
+    title: Guardrails
+    phase: guardrails
+    next:
+    - code
+    - security
+    - calib
+    - xplat
+    - ui
+    - ux
+    on_fail: py
   - id: code
+    kind: agent
+    title: code
+    phase: review
+    role: reviewer
+    next: integrate
+    on_fail: py
   - id: security
-    chip: sec
-  routed:
+    kind: agent
+    title: security
+    phase: review
+    role: reviewer
+    next: integrate
+    on_fail: py
   - id: calib
-    builder: py
+    kind: agent
+    title: calib
+    phase: review
+    role: reviewer
+    next: integrate
+    on_fail: py
     path_globs:
     - mc_calib*
     - mc_*migration*
@@ -91,8 +112,14 @@ reviewers:
     - mc_process_intrinsic_calib*
     - step1_intrinsics*
     - mc/settings/
-  - id: xplat
     builder: py
+  - id: xplat
+    kind: agent
+    title: xplat
+    phase: review
+    role: reviewer
+    next: integrate
+    on_fail: py
     path_globs:
     - mc_update_manager*
     - mc_common_paths*
@@ -119,8 +146,14 @@ reviewers:
     - expanduser
     - shutil\.
     - '["''][^"'']*(/home|C:\\\\|~/)'
+    builder: py
   - id: ui
-    builder: qml
+    kind: agent
+    title: ui
+    phase: review
+    role: reviewer
+    next: integrate
+    on_fail: py
     path_globs:
     - pyside_rc/qml/
     - pyside_rc/icons/
@@ -129,7 +162,13 @@ reviewers:
     - paths:
       - mocap_desktop_gui/
       pattern: '@Property|Signal\(|@Slot'
+    builder: qml
   - id: ux
+    kind: agent
+    title: ux
+    phase: review
+    role: reviewer
+    on_fail: py
     path_globs:
     - pyside_rc/qml/
     - pyside_rc/icons/
@@ -139,6 +178,11 @@ reviewers:
       - mocap_desktop_gui/
       pattern: '@Property|Signal\(|@Slot'
     builder: qml
+  - id: integrate
+    kind: agent
+    title: Integrate
+    phase: integrate
+    agent: integrator
 gate:
   timeout_min: 20
   setup:
@@ -218,7 +262,6 @@ security:
     external_services: Jira, Notion and Figma
 ui:
   port: 8000
-  build_label: py ∥ qml
   job_files:
   - spec.md
   - design.md

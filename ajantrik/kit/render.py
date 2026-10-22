@@ -2,7 +2,8 @@
 
     .factory/factory.json            validated config with every default (read by hooks, gate, engine, dashboard)
     .factory/factory.py, lib/ajantrik_core/   the stdlib-only job engine and its CLI
-    .factory/security/               guard.py, policy.py, secret_scan.sh (+ tests); allow.txt only if missing
+    .factory/security/               guard.py, policy.py, secret_scan.sh, pii_scan.py, content_scan.py (+ tests);
+                                     allow.txt only if missing
     .factory/gate.sh, ui.sh, dashboard.html, backlog.md (if missing), README.md, .gitignore
     .claude/agents/*.md, .claude/skills/*/        every agent and skill (Claude Code subagents)
     .claude/skills/factory/SKILL.md  the /factory orchestrator, generated from the loop
@@ -25,6 +26,7 @@ from typing import Any
 
 import jinja2
 
+from ajantrik.core.graph import DELIVER
 from ajantrik.kit.project import AgentDef, Loaded, Project
 from ajantrik.kit.schema import FactoryConfig
 
@@ -117,50 +119,50 @@ def factory_json(cfg: FactoryConfig, loaded: Loaded) -> dict[str, Any]:
 def stage_rows(cfg: FactoryConfig) -> list[dict[str, str]]:
     rows = []
     for s in cfg.loop.ordered():
-        if s.kind in ("agent", "integrate"):
-            who, writes = f"`{s.agent}`", f"`{s.output}`" + (" (+ `pr-title.txt`, `pr.md`)" if s.kind == "integrate"
+        kind = s.kind if s.kind != "agent" or s.role in (None, "plain") else str(s.role)
+        if s.kind == "agent" and s.role == "builder":
+            who, writes = f"`{s.agent}`", f"`build-{s.id}.md` + commits"
+        elif s.kind == "agent" and s.role == "reviewer":
+            who, writes = f"`{s.agent}`" + (" (routed)" if s.routed else ""), f"`round-<N>/review-{s.id}.md`"
+        elif s.kind == "agent":
+            who, writes = f"`{s.agent}`", f"`{s.output}`" + (" (+ `pr-title.txt`, `pr.md`)" if s.role == "integrator"
                                                              else "")
-        elif s.kind == "builders":
-            who = ", ".join(f"`{b.agent}`" for b in cfg.builders)
-            writes = ", ".join(f"`build-{b.id}.md`" for b in cfg.builders) + " + commits"
-        elif s.kind == "reviewers":
-            ids = [r.id for r in cfg.reviewers.always] + [f"{r.id} (routed)" for r in cfg.reviewers.routed]
-            who, writes = ", ".join(ids), "`round-<N>/review-<id>.md`"
         elif s.kind == "gate":
-            who = "`factory.py gate`: " + (", ".join(g.key for g in cfg.gate.steps) or "no steps")
+            keys = s.steps or [g.key for g in cfg.gate.steps]
+            who = "`factory.py gate`: " + (", ".join(keys) or "no steps")
             writes = "`round-<N>/gate.log`, `gate.json`"
-        elif s.kind == "approval":
-            who, writes = "you (`/factory go`)", ""
         else:
-            who = f"`factory.py deliver` ({cfg.delivery.mode}" + (", after your approval)" if
-                                                                   cfg.delivery.require_approval else ")")
-            writes = ""
-        rows.append({"id": s.id, "kind": s.kind, "who": who, "writes": writes})
+            who, writes = "you (`/factory go`)", ""
+        rows.append({"id": s.id, "kind": kind, "phase": s.phase or "", "who": who, "writes": writes})
+    if cfg.delivery.mode != "none":
+        who = f"`factory.py deliver` ({cfg.delivery.mode}" + (", after your approval)" if
+                                                               cfg.delivery.require_approval else ")")
+        rows.append({"id": DELIVER, "kind": "delivery", "phase": "", "who": who, "writes": ""})
     return rows
 
 
 def diagram(cfg: FactoryConfig) -> str:
     names = []
-    for s in cfg.loop.ordered():
+    for g in cfg.loop.groups():
+        s = g[0]
         if s.kind == "approval":
             names.append(f"⏸ {s.id}")
-        elif s.kind == "builders":
-            names.append(" ∥ ".join(b.agent or b.id for b in cfg.builders))
-        elif s.kind == "reviewers":
-            names.append("reviewers (wait for all)")
         elif s.kind == "gate":
-            names.append("gate")
-        elif s.kind == "delivery":
-            names.append(f"deliver: {cfg.delivery.mode}" + (" (after ⏸ approval)" if cfg.delivery.require_approval
-                                                            and cfg.delivery.mode != "none" else ""))
+            names.append(s.id if s.id.startswith("gate") else f"gate {s.id}")
         else:
-            names.append(s.agent or s.id)
+            names.append(" ∥ ".join(x.agent or x.id for x in g) + (" (wait for all)" if len(g) > 1 else ""))
+    if cfg.delivery.mode != "none":
+        names.append(f"deliver: {cfg.delivery.mode}" + (" (after ⏸ approval)" if cfg.delivery.require_approval
+                                                        else ""))
     lines = ["```", " → ".join(names)]
-    b = next((s for s in cfg.loop.ordered() if s.kind == "builders"), None)
-    checks = [s for s in cfg.loop.ordered() if s.kind in ("gate", "reviewers")]
-    if b and checks:
-        back = {c.id: c.on_fail or b.id for c in checks}
-        lines.append(f"fail / CHANGES → back to {', '.join(sorted(set(back.values())))} "
+    path = cfg.loop.ordered()
+    back: set[str] = set()
+    for i, c in enumerate(path):
+        if c.kind == "gate" or c.role == "reviewer":
+            b = next((x for x in reversed(path[:i]) if x.role == "builder"), None)
+            back.add(c.on_fail or (b.id if b else "needs-human"))
+    if back:
+        lines.append(f"fail / CHANGES → back to {', '.join(sorted(back))} "
                      f"(max {cfg.loop.max_rounds} rounds, then needs-human)")
     lines.append("```")
     return "\n".join(lines)
@@ -246,7 +248,7 @@ class Renderer:
         self.add(".factory/factory.py", LAUNCHER, executable=True)
         self.add_tree(PKG / "core", ".factory/lib/ajantrik_core", skip=("__pycache__", "security"))
         sec = PKG / "core" / "security"
-        for name in ("guard.py", "policy.py", "secret_scan.sh"):
+        for name in ("guard.py", "policy.py", "secret_scan.sh", "pii_scan.py", "content_scan.py"):
             self.add(f".factory/security/{name}", (sec / name).read_bytes(), executable=name.endswith(".sh"))
         self.add_tree(sec / "tests", ".factory/security/tests")
         self.add(".factory/gate.sh", GATE_SH, executable=True)
