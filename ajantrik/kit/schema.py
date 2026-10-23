@@ -702,6 +702,7 @@ class Delivery(_Model):
     require_approval: bool = Field(True, description="Wait for a human approval before delivering.")
     pr: PrOptions = Field(default_factory=PrOptions)
     direct: DirectOptions = Field(default_factory=DirectOptions)
+    pos: Pos | None = Field(None, description="Where the loop designer draws the deliver block. Layout only.")
 
 
 # ---- security, ui ---------------------------------------------------------------------------------

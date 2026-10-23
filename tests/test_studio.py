@@ -283,6 +283,47 @@ def test_static_assets_public(studio):
     assert call(port, "GET", "/app.css")[0] == 200
 
 
+def test_config_put_saves_delivery_block_position(studio):
+    port, token, repo = studio
+    p = Project(repo)
+    good = json.loads(json.dumps(MINIMAL))
+    good["delivery"] = {"mode": "push", "pos": {"x": 1, "y": 2}}
+    status, r, _ = call(port, "PUT", "/api/config", token=token, body={"config": good})
+    assert status == 200 and r["saved"] is True, r
+    assert yaml.safe_load(p.yaml_path.read_text())["delivery"]["pos"] == {"x": 1, "y": 2}
+
+    bad = json.loads(json.dumps(MINIMAL))
+    bad["delivery"] = {"mode": "push", "pos": {"x": 1, "y": 2}, "bogus": True}
+    before = p.yaml_path.read_text()
+    status, r, _ = call(port, "PUT", "/api/config", token=token, body={"config": bad})
+    assert status == 200 and r["saved"] is False and r["errors"]
+    assert p.yaml_path.read_text() == before
+
+
+def _js_function_body(src: str, name: str) -> str:
+    """The source of a top-level `function name` up to the next top-level function."""
+    start = src.index(f"function {name}(")
+    end = src.find("\nfunction ", start + 1)
+    return src[start:end if end != -1 else len(src)]
+
+
+def test_app_js_has_deliver_block_wiring(studio):
+    port, _, _ = studio
+    status, js, _ = call(port, "GET", "/app.js")
+    assert status == 200
+    assert "'+ Deliver'" in js
+    assert "['delivery', 'mode']" in js and "['delivery', 'pos']" in js
+    assert "Delivery is not a block" not in js and "Delivery is not a loop block" not in js
+
+
+def test_deliver_block_and_deliver_tab_share_one_settings_view(studio):
+    port, _, _ = studio
+    _, js, _ = call(port, "GET", "/app.js")
+    assert js.count("function deliverySettings(") == 1
+    assert "deliverySettings()" in _js_function_body(js, "renderDelivery")
+    assert "deliverySettings()" in _js_function_body(js, "renderLoop")
+
+
 # ---- backlog ------------------------------------------------------------------------------------------
 HEADER = "# Backlog\n\n## Queue\n\n"
 
