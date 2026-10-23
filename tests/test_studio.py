@@ -584,3 +584,42 @@ def test_backlog_sync_reports_a_cli_failure(studio, monkeypatch):
 def test_backlog_sync_needs_the_token(studio):
     port, _, _ = studio
     assert call(port, "POST", "/api/backlog/sync", body={})[0] in (401, 403)
+
+
+# ---- delivery from the studio: approving a delivery delivers ------------------------------------------
+def _job_at(repo: Path, stage: str) -> None:
+    jd = repo / ".factory" / "jobs" / "005-readme"
+    jd.mkdir(parents=True, exist_ok=True)
+    (jd / "job.json").write_text(json.dumps({"id": "005-readme", "stage": stage}))
+
+
+def test_deliver_approves_a_waiting_delivery_then_delivers_in_the_background(studio, spawned, monkeypatch):
+    port, token, repo = studio
+    seen: list[list[str]] = []
+    monkeypatch.setattr(studio_server, "_cli", lambda root, args, env=None, timeout=0: (
+        seen.append(args) or {"ok": True, "data": {"id": "005-readme", "stage": "deliver"}}))
+    _job_at(repo, "awaiting-deliver")
+    status, r, _ = call(port, "POST", "/api/jobs/005-readme/deliver", token=token, body={})
+    assert status == 200 and r["started"] is True
+    assert seen == [["approve", "005-readme", "--stage", "deliver", "--json"]]
+    assert spawned == [["deliver", "005-readme"]]
+
+
+def test_an_approved_delivery_goes_straight_on_to_deliver(studio, spawned, monkeypatch):
+    port, token, repo = studio
+    monkeypatch.setattr(studio_server, "_cli", lambda root, args, env=None, timeout=0: (
+        {"ok": True, "data": {"id": "005-readme", "stage": "deliver" if "deliver" in args else "tests"}}))
+    _job_at(repo, "awaiting-deliver")
+    status, r, _ = call(port, "POST", "/api/jobs/005-readme/approve", token=token, body={"stage": "deliver"})
+    assert status == 200 and r["delivering"]["started"] is True and spawned == [["deliver", "005-readme"]]
+    _job_at(repo, "awaiting-approval")
+    status, r, _ = call(port, "POST", "/api/jobs/005-readme/approve", token=token, body={"stage": "approval"})
+    assert status == 200 and "delivering" not in r and spawned == [["deliver", "005-readme"]]
+
+
+def test_the_board_offers_one_approve_and_deliver_and_a_deliver_column():
+    html = DASHBOARD.read_text()
+    assert "act('approve & deliver', id, 'deliver', '', true)" in html
+    assert "act('approve', id, 'approve', awaiting)" not in html  # approving alone would strand the job
+    assert "key: 'deliver', stages: ['deliver'], label: 'Deliver'" in html
+    assert "st === 'deliver' && job.agent !== 'deliver'" in html  # an approved job that nothing delivers yet

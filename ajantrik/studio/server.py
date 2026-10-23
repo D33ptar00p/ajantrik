@@ -32,7 +32,8 @@ from pathlib import Path
 from typing import Any
 
 from ajantrik.core.connections import tickets as tix
-from ajantrik.core.util import FactoryError
+from ajantrik.core.graph import DELIVER
+from ajantrik.core.util import FactoryError, read_json
 from ajantrik.kit import workspace
 from ajantrik.kit.project import AgentDef, Project, SkillDef, guardrail_library, library_dir, list_presets
 from ajantrik.kit.schema import BUILTIN_GUARDRAILS, FactoryConfig
@@ -391,10 +392,23 @@ class Studio:
             if not isinstance(stage, str) or not STAGE.match(stage):
                 raise ApiError(400, "bad stage id")
             args += ["--stage", stage]
-        return _cli(self.root, [*args, "--json"], env={"FACTORY_APPROVER": "studio"}, timeout=60)
+        res = _cli(self.root, [*args, "--json"], env={"FACTORY_APPROVER": "studio"}, timeout=60)
+        # An approved delivery goes straight on to deliver; nothing else would pick it up.
+        if res.get("ok") and isinstance(res.get("data"), dict) and res["data"].get("stage") == DELIVER:
+            return {**res, "delivering": self._detached(["deliver", job_id])}
+        return res
 
     def deliver(self, job_id: str) -> dict[str, Any]:
-        return _cli(self.root, ["deliver", self._job(job_id), "--json"], env={"FACTORY_APPROVER": "studio"})
+        """Deliver a job; one waiting for its delivery approval is approved first (the studio's
+        "approve & deliver"). The push and PR run in the background."""
+        job_id = self._job(job_id)
+        job = read_json(self.project.factory_dir / "jobs" / job_id / "job.json", {}) or {}
+        if job.get("stage") == f"awaiting-{DELIVER}":
+            res = _cli(self.root, ["approve", job_id, "--stage", DELIVER, "--json"], env={"FACTORY_APPROVER": "studio"},
+                       timeout=60)
+            if not res.get("ok"):
+                return res
+        return self._detached(["deliver", job_id])
 
     def _detached(self, args: list[str]) -> dict[str, Any]:
         """Long-running CLI commands (run, go) keep going after the request returns. One that fails within

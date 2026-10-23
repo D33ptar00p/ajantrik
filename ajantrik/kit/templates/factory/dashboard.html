@@ -431,7 +431,11 @@ function configure(cfg) {
     return { key: `p:${p.id}`, stages: cfg.loop.stages.filter((s) => phaseOf(s) === p.id).map((s) => s.id),
       label: p.title || p.id, who: parts.map((g) => g.join(' ∥ ')).join(' · '), hue: PHASE_HUES[i % PHASE_HUES.length] }
   })
-  COLUMNS.push({ key: 'done', stages: ['deliver', 'ready', 'delivered'], label: 'Done', who: mode === 'none' ? 'you push' : mode, cls: 'ready-col' })
+  // Delivery has a column of its own: a job sits there from its approval until the push / PR is done.
+  if (mode !== 'none') {
+    COLUMNS.push({ key: 'deliver', stages: ['deliver'], label: 'Deliver', who: mode, hue: PHASE_HUES[phaseList.length % PHASE_HUES.length] })
+  }
+  COLUMNS.push({ key: 'done', stages: ['ready', 'delivered'], label: 'Done', who: mode === 'none' ? 'you push' : mode, cls: 'ready-col' })
   COLUMNS.push({ key: 'human', stages: [...Object.keys(APPROVALS).map((id) => `awaiting-${id}`), 'awaiting-deliver', 'needs-human'],
     label: 'Needs human', who: 'you', cls: 'you' })
   STAGE_COL = Object.fromEntries(COLUMNS.flatMap((c) => c.stages.map((st) => [st, c.key])))
@@ -646,11 +650,15 @@ function actions(job) {
   const awaiting = st.startsWith('awaiting-') ? st.slice('awaiting-'.length) : null
   const isDelivery = awaiting && DELIVERY_STAGE && awaiting === DELIVERY_STAGE.id
   const live = HEADLESS && EMBEDDED
+  // Approving a delivery delivers: one step, so a job never sits approved with nothing running it.
   if (isDelivery) {
-    if (live) return [act('deliver', id, 'deliver', '', true), act('approve', id, 'approve', awaiting)]
-    return HEADLESS
-      ? [cmd('deliver', `factory deliver ${id}`, true), cmd('approve', `factory approve ${id} --stage ${awaiting}`)]
-      : [cmd('deliver', `/factory deliver ${id}`, true)]
+    if (live) return [act('approve & deliver', id, 'deliver', '', true)]
+    return HEADLESS ? [cmd('approve & deliver', `factory go ${id}`, true)] : [cmd('deliver', `/factory deliver ${id}`, true)]
+  }
+  // Approved but not delivered yet (approved from the command line, or a delivery that was interrupted).
+  if (st === 'deliver' && job.agent !== 'deliver') {
+    if (live) return [act('deliver', id, 'deliver', '', true)]
+    return [cmd('deliver', `${CLI} deliver ${id}`, true)]
   }
   if (awaiting) {
     if (live) return [act('go', id, 'go', '', true), cmd('rework', `factory rework ${id} "<note>"`)]
@@ -666,10 +674,10 @@ function actions(job) {
   return []
 }
 
-// Done and Needs human hold jobs in several states, so their cards say which.
+// Deliver, Done and Needs human hold jobs in several states, so their cards say which.
 function stateOf(job) {
   const st = job.stage || ''
-  if (st === 'deliver') return 'delivering…'
+  if (st === 'deliver') return job.agent === 'deliver' ? 'delivering…' : 'approved: deliver to push'
   if (st === 'ready') return CFG.delivery.mode === 'none' ? 'ready to push' : 'ready to deliver'
   if (st === 'delivered') return 'delivered'
   if (st === 'awaiting-deliver') return '⏸ approve delivery'
