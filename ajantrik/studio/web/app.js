@@ -519,10 +519,7 @@ function renderJobs(jobs) {
         btns.push(act('Approve', () => api('POST', `jobs/${j.id}/approve`, { stage: awaiting })))
         btns.push(act('Go', () => api('POST', `jobs/${j.id}/go`, {}), true))
       }
-      if (isDelivery) {
-        btns.push(act('Approve', () => api('POST', `jobs/${j.id}/approve`, { stage: awaiting })))
-        btns.push(act('Deliver', () => api('POST', `jobs/${j.id}/deliver`, {}), true))
-      }
+      if (isDelivery) btns.push(act('Approve & deliver', () => api('POST', `jobs/${j.id}/deliver`, {}), true))
       if (stage === 'ready' && val(['delivery', 'mode']) !== 'none') btns.push(act('Deliver', () => api('POST', `jobs/${j.id}/deliver`, {}), true))
     }
     return h('tr', {}, h('td', {}, h('code', {}, j.id), h('div', { class: 'help' }, j.feature || '')),
