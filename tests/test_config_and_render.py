@@ -195,6 +195,17 @@ def test_warnings_for_risky_choices():
     assert any("no Codex" in x or "no tool hooks" in x for x in warnings(cfg(runtime={"kind": "codex-cli"})))
 
 
+def test_delivery_pos_is_layout_only_and_optional():
+    assert cfg().delivery.pos is None
+    assert cfg(delivery={"mode": "pr"}).delivery.pos is None
+    c = cfg(delivery={"mode": "pr", "pos": {"x": 10, "y": 20}})
+    assert c.delivery.pos is not None and (c.delivery.pos.x, c.delivery.pos.y) == (10, 20)
+    with pytest.raises(ValidationError):
+        cfg(delivery={"mode": "pr", "bogus": 1})
+    with pytest.raises(ValidationError):
+        cfg(delivery={"mode": "pr", "pos": {"x": "left", "y": 2}})
+
+
 def test_minimal_loop_without_gate_or_reviewers():
     c = cfg(loop={"stages": [{"id": "main", "kind": "agent", "role": "builder", "phase": "build"}]})
     assert any("no gate" in w for w in warnings(c))
