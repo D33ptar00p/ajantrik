@@ -267,6 +267,7 @@ textarea.yaml { min-height: 60vh; }
 .edge.off .line { stroke-dasharray: 3 4; opacity: .6; }
 .edge.fail .line { stroke: var(--bad); stroke-dasharray: 7 5; stroke-linejoin: round; }
 .edge.fail.implicit .line { opacity: .75; stroke-dasharray: 4 5; }
+.edge.deliver .line { stroke: var(--ok); stroke-dasharray: 2 4; }
 .edge.sel .line { stroke-width: 3.5; stroke: var(--accent); }
 .edge.fail.sel .line { stroke: var(--bad); opacity: 1; }
 .ah { fill: color-mix(in srgb, var(--accent) 75%, var(--muted)); }
@@ -289,6 +290,7 @@ textarea.yaml { min-height: 60vh; }
 .gnode.k-approval { border-color: var(--warn); border-style: dashed; }
 .gnode.k-gate, .gnode.r-builder, .gnode.r-reviewer { background: var(--soft); }
 .gnode.r-integrator { border-color: var(--ok); }
+.gnode.k-deliver { border: 4px double var(--ok); background: color-mix(in srgb, var(--ok) 8%, var(--bg)); }
 /* phase: a coloured top edge and pill, the hue set per phase as --ph */
 .gnode[style*="--ph"] { border-top: 4px solid hsl(var(--ph) 55% 55%); }
 .phpill {
@@ -324,10 +326,12 @@ textarea.yaml { min-height: 60vh; }
 .inspector .stack { display: flex; flex-direction: column; gap: 10px; margin: 10px 0; }
 .inspector .grid { grid-template-columns: 1fr; }
 .kpill { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; padding: 1px 7px; border-radius: 8px; background: var(--soft); color: var(--accent); vertical-align: 2px; }
+.kpill.k-deliver { color: var(--ok); }
 .legend p { margin: 8px 0; font-size: 13px; }
 .lg { display: inline-block; width: 26px; height: 0; margin-right: 8px; vertical-align: middle; border-top: 2px solid var(--accent); }
 .lg.fail { border-top: 2px dashed var(--bad); }
 .palette button.k-approval { border-style: dashed; border-color: var(--warn); }
+.palette button.k-deliver { border-color: var(--ok); }
 @media (max-width: 860px) { .gbody { flex-direction: column; } .inspector { width: auto; max-height: 40vh; } }
 
 /* ---- projects page --------------------------------------------------------------------------- */

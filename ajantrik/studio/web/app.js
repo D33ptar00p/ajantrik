@@ -693,12 +693,20 @@ function renderBacklog() {
 // path never run. After every edit the list is re-sorted into run order and `next` is written only
 // where it differs from the list order, so the YAML stays as plain as the graph allows. Agents and
 // gates sit in one of the four fixed phases (an agent's phase is also what it does); approvals have
-// none. Delivery is not a stage: it follows the last one on its own (Deliver tab).
+// none. Delivery is shown as one Deliver block: a view of the `delivery` settings (the same ones as the
+// Deliver tab) that always follows the last stage. It has no ports and is not a stage.
 function stageLabel(s) { return s.title || s.id }
 const NODE_W = 184
 const NODE_H = 84
 const KIND_LABEL = { agent: 'Agent', approval: 'Approval', gate: 'Guardrails' }
 const RESERVED_IDS = ['ready', 'needs-human', 'abandoned', 'delivered', 'end', 'deliver']
+const DELIVER_ID = 'deliver'
+const hasDeliver = () => (val(['delivery', 'mode']) || 'none') !== 'none'
+// The working copy, not val(): a removed pos must not come back from the server's effective config.
+const deliverPos = () => getIn(S.cfg, ['delivery', 'pos']) || S.designer.auto[DELIVER_ID]
+function deliverSummary() {
+  return `${val(['delivery', 'mode'])}${val(['delivery', 'require_approval']) ? ' · after approval' : ''}`
+}
 const hasFail = (s) => s.kind === 'gate' || roleOf(s) === 'reviewer'
 const defaultAgent = (s) => ({ builder: `builder-${s.id}`, reviewer: `reviewer-${s.id}` })[roleOf(s)] || null
 // Where a failure goes when on_fail is unset: the nearest builder before the stage on the run path.
@@ -840,10 +848,17 @@ function autoLayout(all) {
     if (!all && s.pos) return
     place(s, 40 + j * (NODE_W + 40), 50 + deepest * (NODE_H + 48) + 120)
   })
+  // the Deliver block gets the column after the last one of the run path
+  if (hasDeliver()) {
+    const p = { x: 40 + slots.length * (NODE_W + 110), y: 50 }
+    if (all) setIn(['delivery', 'pos'], p)
+    else if (!getIn(S.cfg, ['delivery', 'pos'])) D.auto[DELIVER_ID] = p
+  }
 }
 const posOf = (s) => s.pos || S.designer.auto[s.id]
 function savePositions() {
   for (const s of list(['loop', 'stages'])) if (!s.pos && S.designer.auto[s.id]) s.pos = { ...S.designer.auto[s.id] }
+  if (hasDeliver() && !getIn(S.cfg, ['delivery', 'pos']) && S.designer.auto[DELIVER_ID]) setIn(['delivery', 'pos'], { ...S.designer.auto[DELIVER_ID] })
 }
 
 function nodeSummary(s) {
@@ -967,6 +982,25 @@ function renderLoop() {
         }
       }
     }
+    // The Deliver block follows the last step of the run path: one edge from each stage of it.
+    if (hasDeliver() && groups.length) {
+      const b = deliverPos()
+      for (const id of groups[groups.length - 1]) {
+        const a = byId[id] && posOf(byId[id])
+        if (!a) continue
+        const x1 = a.x + NODE_W, y1 = a.y + NODE_H / 2, x2 = b.x, y2 = b.y + NODE_H / 2
+        let d
+        if (x2 >= x1 + 30) {
+          const dx = Math.max(40, (x2 - x1) / 2)
+          d = `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`
+        } else {
+          const ym = Math.abs(y2 - y1) > NODE_H ? (y1 + y2) / 2 : Math.min(y1, y2) - NODE_H / 2 - 36
+          const r = 30
+          d = `M${x1},${y1} C${x1 + r * 1.6},${y1} ${x1 + r * 1.6},${ym} ${x1},${ym} L${x2},${ym} C${x2 - r * 1.6},${ym} ${x2 - r * 1.6},${y2} ${x2},${y2}`
+        }
+        edgeLayer.appendChild(path(d, 'next deliver', `${id} → deliver (delivery always follows the last stage)`))
+      }
+    }
     if (D.temp) {
       const p = document.createElementNS(svgNS, 'path')
       const { x1, y1, x2, y2, fail } = D.temp
@@ -993,7 +1027,8 @@ function renderLoop() {
       canvas.removeEventListener('pointermove', move)
       D.temp = null
       const target = nodeAt(ev.clientX, ev.clientY)
-      if (target && target !== s.id) connect(s.id, target, fail, ev.shiftKey || ev.altKey)
+      if (target === DELIVER_ID) { toast('Delivery always follows the last stage; it takes no edges.'); drawEdges() }
+      else if (target && target !== s.id) connect(s.id, target, fail, ev.shiftKey || ev.altKey)
       else drawEdges()
     }
     canvas.addEventListener('pointermove', move)
@@ -1042,6 +1077,28 @@ function renderLoop() {
     D.sel = { type: 'edge', kind: fail ? 'fail' : 'next', from, to }
     refresh()
   }
+  // Dragging a node: `place({x, y})` runs on every snapped move, `done(moved)` on release.
+  const dragNode = (e, el, p0, place, done) => {
+    const w0 = toWorld(e.clientX, e.clientY)
+    let moved = false
+    el.setPointerCapture(e.pointerId)
+    const move = (ev) => {
+      const w = toWorld(ev.clientX, ev.clientY)
+      const nx = Math.round((p0.x + w.x - w0.x) / 8) * 8, ny = Math.round((p0.y + w.y - w0.y) / 8) * 8
+      if (!moved && Math.abs(nx - p0.x) + Math.abs(ny - p0.y) < 4) return
+      if (!moved) savePositions()
+      moved = true
+      place({ x: nx, y: ny })
+      el.style.left = `${nx}px`
+      el.style.top = `${ny}px`
+      drawEdges()
+    }
+    el.addEventListener('pointermove', move)
+    el.addEventListener('pointerup', () => {
+      el.removeEventListener('pointermove', move)
+      done(moved)
+    }, { once: true })
+  }
   const drawNodes = () => {
     const { stages: st, order, groups } = G()
     const phases = val(['loop', 'phases']) || []
@@ -1074,28 +1131,11 @@ function renderLoop() {
         if (e.target.classList.contains('out')) return connectDrag(e, s, false)
         if (e.target.classList.contains('failp')) return connectDrag(e, s, true)
         e.stopPropagation()
-        const w0 = toWorld(e.clientX, e.clientY)
-        const p0 = { ...posOf(s) }
-        let moved = false
-        el.setPointerCapture(e.pointerId)
-        const move = (ev) => {
-          const w = toWorld(ev.clientX, ev.clientY)
-          const nx = Math.round((p0.x + w.x - w0.x) / 8) * 8, ny = Math.round((p0.y + w.y - w0.y) / 8) * 8
-          if (!moved && Math.abs(nx - p0.x) + Math.abs(ny - p0.y) < 4) return
-          if (!moved) savePositions()
-          moved = true
-          s.pos = { x: nx, y: ny }
-          el.style.left = `${nx}px`
-          el.style.top = `${ny}px`
-          drawEdges()
-        }
-        el.addEventListener('pointermove', move)
-        el.addEventListener('pointerup', () => {
-          el.removeEventListener('pointermove', move)
+        dragNode(e, el, { ...posOf(s) }, (p) => { s.pos = p }, (moved) => {
           if (moved) markDirty()
           D.sel = { type: 'node', id: s.id }
           refresh()
-        }, { once: true })
+        })
       })
       el.addEventListener('keydown', (e) => {
         const step = e.shiftKey ? 40 : 8
@@ -1104,7 +1144,43 @@ function renderLoop() {
         if (e.key === 'Enter') { D.sel = { type: 'node', id: s.id }; refresh() }
       })
       return el
-    }))
+    }), ...(hasDeliver() ? [deliverNode()] : []))
+  }
+  // The Deliver block: no ports, not a stage. Its position is `delivery.pos`.
+  const deliverNode = () => {
+    const p = deliverPos()
+    const sum = deliverSummary()
+    const el = h('div', {
+      class: `gnode k-deliver${D.sel && D.sel.type === 'deliver' ? ' sel' : ''}`, tabindex: '0', role: 'button',
+      'data-id': DELIVER_ID, 'aria-label': `Deliver block, ${sum}`,
+      style: `left:${p.x}px;top:${p.y}px;width:${NODE_W}px;height:${NODE_H}px`,
+    },
+    h('div', { class: 'gk' }, 'Deliver'),
+    h('div', { class: 'gt' }, 'Deliver'),
+    h('div', { class: 'gs' }, sum))
+    el.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return
+      e.stopPropagation()
+      dragNode(e, el, { ...deliverPos() }, (np) => setIn(['delivery', 'pos'], np), () => {
+        D.sel = { type: 'deliver' }
+        refresh()
+      })
+    })
+    el.addEventListener('keydown', (e) => {
+      const step = e.shiftKey ? 40 : 8
+      const mv = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key]
+      if (mv) {
+        e.preventDefault()
+        savePositions()
+        const q = deliverPos()
+        setIn(['delivery', 'pos'], { x: q.x + mv[0], y: q.y + mv[1] })
+        D.sel = { type: 'deliver' }
+        refresh()
+        layer.querySelector(`[data-id="${DELIVER_ID}"]`)?.focus()
+      }
+      if (e.key === 'Enter') { D.sel = { type: 'deliver' }; refresh() }
+    })
+    return el
   }
 
   // ---- inspector ----
@@ -1211,6 +1287,18 @@ function renderLoop() {
   const renderInspector = () => {
     const { stages: st, order, groups } = G()
     const phases = val(['loop', 'phases']) || []
+    if (D.sel && D.sel.type === 'deliver' && !hasDeliver()) D.sel = null  // None was chosen: the block is gone
+    if (D.sel && D.sel.type === 'deliver') {
+      const { core, sections } = deliverySettings()
+      inspector.replaceChildren(
+        h('h3', {}, h('span', { class: 'kpill k-deliver' }, 'Deliver')),
+        h('p', { class: 'help' }, 'Runs after the last stage. The same settings as the Deliver tab.'),
+        ...core, ...sections,
+        h('div', { class: 'row' }, h('button', { type: 'button', class: 'danger', onclick: () => {
+          if (confirm('Remove the Deliver block? Delivery is turned off; its settings are kept.')) removeDeliver()
+        } }, 'Remove deliver block')))
+      return
+    }
     if (D.sel && D.sel.type === 'edge') {
       const s = st.find((x) => x.id === D.sel.from)
       if (!s) { D.sel = null; return renderInspector() }
@@ -1244,8 +1332,8 @@ function renderLoop() {
           h('p', { class: 'help' }, `Run order: ${groups.map((g) => (g.length > 1 ? `(${g.join(' ∥ ')})` : g[0])).join(' → ') || '(empty)'}${tail}`),
           groups.error ? h('p', { class: 'msg error' }, `The path stops here: ${groups.error}.`) : '',
           h('p', { class: 'help' }, mode === 'none'
-            ? 'Delivery is off (Deliver tab): a job ends ready after the last stage.'
-            : 'Delivery is not a block: it follows the last stage on its own. Set it up in the Deliver tab.')),
+            ? 'Delivery is off: a job ends ready after the last stage. Add a Deliver block to turn it on.'
+            : 'Delivery shows as the Deliver block after the last stage; select it (or use the Deliver tab) to set it up.')),
         phasesEditor())
       return
     }
@@ -1387,15 +1475,31 @@ function renderLoop() {
     refresh()
     toast(kind === 'gate' ? `Added ${id}. Pick the guardrails this gate runs, then drag from a port to connect it.` : `Added ${id}. Drag from a port to connect it.`)
   }
+  // The Deliver block is a view of `delivery`: adding it turns delivery on (push), removing it turns it off.
+  const addDeliver = () => {
+    setDeliveryMode('push')
+    D.sel = { type: 'deliver' }
+    render()  // not refresh(): the palette's disabled state has to update
+    toast('Added the Deliver block (push). Pick the mode in the inspector.')
+  }
+  const removeDeliver = () => {
+    setDeliveryMode('none')
+    D.sel = null
+    render()
+  }
   const palette = h('div', { class: 'palette', role: 'toolbar', 'aria-label': 'Add a stage' },
     h('span', { class: 'help' }, 'Add'),
-    STAGE_KINDS.map((k) => h('button', { type: 'button', class: `small k-${k}`, title: KIND_HELP[k], onclick: () => addNode(k) }, `+ ${KIND_LABEL[k]}`)))
+    STAGE_KINDS.map((k) => h('button', { type: 'button', class: `small k-${k}`, title: KIND_HELP[k], onclick: () => addNode(k) }, `+ ${KIND_LABEL[k]}`)),
+    h('button', { type: 'button', class: 'small k-deliver', disabled: hasDeliver(),
+      title: hasDeliver() ? 'Delivery is already in the loop' : 'Deliver the finished job after the last stage', onclick: addDeliver }, '+ Deliver'))
   const fit = () => {
     const st = G().stages.filter((s) => posOf(s))
-    if (!st.length) return
+    const dp = hasDeliver() ? deliverPos() : null
+    if (!st.length && !dp) return
     const r = canvas.getBoundingClientRect()
-    const minX = Math.min(...st.map((s) => posOf(s).x)) - 40, minY = Math.min(...st.map((s) => posOf(s).y)) - 50
-    const maxX = Math.max(...st.map((s) => posOf(s).x + NODE_W)) + 40, maxY = Math.max(...st.map((s) => posOf(s).y + NODE_H)) + 60 + 22 * st.filter(hasFail).length  // room for the failure lanes
+    const xs = [...st.map((s) => posOf(s).x), ...(dp ? [dp.x] : [])], ys = [...st.map((s) => posOf(s).y), ...(dp ? [dp.y] : [])]
+    const minX = Math.min(...xs) - 40, minY = Math.min(...ys) - 50
+    const maxX = Math.max(...xs) + NODE_W + 40, maxY = Math.max(...ys) + NODE_H + 60 + 22 * st.filter(hasFail).length  // room for the failure lanes
     D.k = Math.min(1.25, Math.max(0.3, Math.min(r.width / (maxX - minX), r.height / (maxY - minY))))
     D.x = (r.width - (maxX - minX) * D.k) / 2 - minX * D.k
     D.y = (r.height - (maxY - minY) * D.k) / 2 - minY * D.k
@@ -1436,7 +1540,8 @@ function renderLoop() {
     if ((e.key === 'Delete' || e.key === 'Backspace') && D.sel) {
       e.preventDefault()
       const st = G().stages
-      if (D.sel.type === 'node') { if (confirm(`Remove stage ${D.sel.id}?`)) deleteStage(D.sel.id) }
+      if (D.sel.type === 'deliver') { if (confirm('Remove the Deliver block? Delivery is turned off; its settings are kept.')) removeDeliver() }
+      else if (D.sel.type === 'node') { if (confirm(`Remove stage ${D.sel.id}?`)) deleteStage(D.sel.id) }
       else if (D.sel.kind === 'fail') { const s = st.find((x) => x.id === D.sel.from); if (s) { delete s.on_fail; markDirty() } D.sel = null; refresh() }
       else {
         // removes just this edge; a fan-out keeps its other branches
@@ -1904,22 +2009,30 @@ const MODES = [
   ['pr', 'Pull request', 'Push the branch and open a PR / MR on the git host.'],
   ['direct', 'Direct to base', 'Put the commits straight onto the base branch, with no PR.'],
 ]
-function renderDelivery() {
+// Mode changes go through here so choosing None, from the Deliver tab or the loop designer's Deliver
+// block, also drops the block's layout position (the other delivery settings are kept).
+function setDeliveryMode(v) {
+  setIn(['delivery', 'mode'], v)
+  if (v === 'none') setIn(['delivery', 'pos'], undefined)
+}
+// The delivery settings, shared by the Deliver tab and the Deliver block's inspector in the loop designer:
+// `core` is the mode, approval and warnings; `sections` the Pull request / Direct to base cards.
+function deliverySettings() {
   const mode = val(['delivery', 'mode'])
   const warns = (S.issues.warnings || []).filter((w) => /deliver|direct|approval/i.test(w))
-  return h('div', {},
-    section('How a finished job leaves the factory',
-      h('p', { class: 'help' }, 'Delivery is not a loop block: it runs on its own after the last stage of the loop.'),
-      h('fieldset', { class: 'radios' }, h('legend', {}, 'Mode'), MODES.map(([v, l, help]) => {
-        const id = `dm-${v}`
-        return h('div', { class: 'radio' + (mode === v ? ' sel' : '') },
-          h('input', { type: 'radio', name: 'delivery-mode', id, value: v, checked: mode === v, onchange: () => { setIn(['delivery', 'mode'], v); render() } }),
-          h('label', { for: id }, h('strong', {}, l), h('span', { class: 'help' }, help)))
-      })),
-      mode !== 'none' ? field('Require a human approval before delivering', ['delivery', 'require_approval'], { type: 'bool', rerender: true,
-        help: 'The job waits in an approval column; approve from the studio, `factory approve`, or /factory deliver.' }) : null,
-      warns.map((w) => h('div', { class: 'msg warn' }, w)),
-      mode === 'direct' && val(['delivery', 'require_approval']) === false && !warns.length ? h('div', { class: 'msg warn' }, 'Commits will land on the base branch with no human in the loop. Save to see the server\'s check.') : null),
+  const core = [
+    h('fieldset', { class: 'radios' }, h('legend', {}, 'Mode'), MODES.map(([v, l, help]) => {
+      const id = `dm-${v}`
+      return h('div', { class: 'radio' + (mode === v ? ' sel' : '') },
+        h('input', { type: 'radio', name: 'delivery-mode', id, value: v, checked: mode === v, onchange: () => { setDeliveryMode(v); render() } }),
+        h('label', { for: id }, h('strong', {}, l), h('span', { class: 'help' }, help)))
+    })),
+    mode !== 'none' ? field('Require a human approval before delivering', ['delivery', 'require_approval'], { type: 'bool', rerender: true,
+      help: 'The job waits in an approval column; approve from the studio, `factory approve`, or /factory deliver.' }) : null,
+    ...warns.map((w) => h('div', { class: 'msg warn' }, w)),
+    mode === 'direct' && val(['delivery', 'require_approval']) === false && !warns.length ? h('div', { class: 'msg warn' }, 'Commits will land on the base branch with no human in the loop. Save to see the server\'s check.') : null,
+  ]
+  const sections = [
     mode === 'pr' ? section('Pull request',
       grid(field('Open as draft', ['delivery', 'pr', 'draft'], { type: 'bool' }),
         field('Reviewers', ['delivery', 'pr', 'reviewers'], { type: 'list' }),
@@ -1927,7 +2040,17 @@ function renderDelivery() {
       h('p', { class: 'help' }, `Git host: ${val(['connections', 'git', 'provider'])} (Connections tab).`)) : null,
     mode === 'direct' ? section('Direct to base',
       grid(field('Strategy', ['delivery', 'direct', 'strategy'], { type: 'select', options: [['ff-only', 'fast-forward only'], ['squash', 'squash into one commit']] }),
-        field('Push the base branch', ['delivery', 'direct', 'push'], { type: 'bool', help: 'Off: update the local base branch only (refused when it is checked out).' }))) : null)
+        field('Push the base branch', ['delivery', 'direct', 'push'], { type: 'bool', help: 'Off: update the local base branch only (refused when it is checked out).' }))) : null,
+  ]
+  return { core: core.filter(Boolean), sections: sections.filter(Boolean) }  // replaceChildren would print a null
+}
+function renderDelivery() {
+  const { core, sections } = deliverySettings()
+  return h('div', {},
+    section('How a finished job leaves the factory',
+      h('p', { class: 'help' }, 'Delivery runs on its own after the last stage of the loop. The loop designer shows it as a single Deliver block with these same settings.'),
+      ...core),
+    ...sections)
 }
 
 // ---- Runtime -------------------------------------------------------------------------------------

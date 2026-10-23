@@ -176,8 +176,9 @@ from the arrows: a block whose success edge fans out (`next: [a, b]`, or a secon
 studio) starts `a` and `b` at the same time as one step. Each branch is a single agent, and all
 branches must lead on to the same block (or the same fan-out), where the path joins again. Without a
 fan-out, blocks run one after the other. Delivery
-is not a block: after the last one the job is delivered by `delivery.mode` (`none`, `push`, `pr` or
-`direct` with `ff-only` or `squash`), optionally after an approval.
+shows in the studio as a single Deliver block that always runs after the last block; it is the same
+`delivery` settings as the Deliver tab: after the last block the job is delivered by `delivery.mode`
+(`none`, `push`, `pr` or `direct` with `ff-only` or `squash`), optionally after an approval.
 
 The blocks form a graph:
 
