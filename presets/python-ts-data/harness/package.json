@@ -1,9 +1,0 @@
-{
-  "name": "omnigrid-factory-harness",
-  "private": true,
-  "type": "module",
-  "description": "Map screenshot harness for the OmniGrid factory. Uses the system Chrome; no browser download.",
-  "dependencies": {
-    "playwright-core": "1.63.0"
-  }
-}

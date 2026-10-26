@@ -45,11 +45,11 @@ def git_repo(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def factory(git_repo: Path) -> Callable[..., Project]:
-    """Initialise the blank preset, apply overrides to factory.yaml, render."""
+    """Initialise the default preset, apply overrides to factory.yaml, render."""
 
     def make(**overrides: Any) -> Project:
         p = Project(git_repo)
-        p.init_from_preset("blank", name="demo", force=True)
+        p.init_from_preset("default", name="demo", force=True)
         data = p.raw()
         for key, value in overrides.items():
             target = data

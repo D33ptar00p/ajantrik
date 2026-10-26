@@ -489,7 +489,7 @@ class Workspace:
             raise ApiError(400, "api_key_ref must be a reference like env:NAME, never the key itself")
         try:
             return workspace.create(path.strip(), str(body.get("runtime") or "claude-code"),
-                                    str(body.get("preset") or "blank"), (body.get("name") or None), api,
+                                    str(body.get("preset") or "default"), (body.get("name") or None), api,
                                     registry=self.registry)
         except FactoryError as e:
             raise ApiError(400, str(e)) from e

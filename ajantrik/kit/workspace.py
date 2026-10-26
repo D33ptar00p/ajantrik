@@ -110,7 +110,7 @@ def inspect(path: str) -> dict[str, Any]:
     return info
 
 
-def create(path: str, runtime: str, preset: str = "blank", name: str | None = None,
+def create(path: str, runtime: str, preset: str = "default", name: str | None = None,
            api: dict[str, Any] | None = None, registry: Registry | None = None) -> dict[str, Any]:
     """Register a repo as a project, setting up its factory if it has none."""
     reg = registry or Registry()
@@ -204,5 +204,3 @@ def set_runtime(root: Path, runtime: str) -> None:
     data = p.raw()
     data.setdefault("runtime", {})["kind"] = runtime
     p.yaml_path.write_text(dump_yaml(data))
-
-

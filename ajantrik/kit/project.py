@@ -305,7 +305,7 @@ class Project:
         data = yaml.safe_load((src / "factory.yaml").read_text())
         if name:
             data.setdefault("repo", {})["name"] = name
-            if data["repo"].get("title", "").endswith("Software Factory") and preset == "blank":
+            if data["repo"].get("title", "").endswith("Software Factory") and preset == "default":
                 data["repo"]["title"] = ""
         self.yaml_path.write_text(dump_yaml(data))
         for sub in ("agents", "skills"):

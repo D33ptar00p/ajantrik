@@ -2284,11 +2284,11 @@ function renderHome() {
 
 async function openNewProject() {
   const dlg = $('dlg-project')
-  const presets = await api('GET', 'presets').catch(() => [{ name: 'blank', title: 'Blank' }])
+  const presets = await api('GET', 'presets').catch(() => [{ name: 'default', title: 'Default factory' }])
   const path = h('input', { id: 'np-path', type: 'text', placeholder: '/home/you/repos/my-app', autocomplete: 'off', spellcheck: 'false', required: true })
   const name = h('input', { id: 'np-name', type: 'text', placeholder: 'defaults to the folder name', autocomplete: 'off' })
   const info = h('div', { class: 'np-info', 'aria-live': 'polite' })
-  const preset = h('select', { id: 'np-preset' }, presets.map((p) => h('option', { value: p.name, selected: p.name === 'blank' }, `${p.title} (${p.name})`)))
+  const preset = h('select', { id: 'np-preset' }, presets.map((p) => h('option', { value: p.name, selected: p.name === 'default' }, `${p.title} (${p.name})`)))
   const runtimes = ['claude-code', 'claude-cli', 'codex-cli', 'api']
   const RT_HELP = { 'claude-code': 'You run /factory in Claude Code; the session orchestrates.', 'claude-cli': 'Ajantrik drives `claude -p` headless.', 'codex-cli': 'Ajantrik drives `codex exec` headless.', api: 'Ajantrik calls a model API itself: Anthropic, OpenAI, Bedrock, Ollama or a LiteLLM proxy.' }
   let runtime = 'claude-code'

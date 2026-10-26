@@ -1,4 +1,4 @@
-"""Schema rules, routing, rendering (presets against the hand-built factories), tickets and backlog."""
+"""Schema rules, routing, rendering (the default preset against this repo's own factory), tickets and backlog."""
 
 from __future__ import annotations
 
@@ -18,14 +18,11 @@ from ajantrik.core.routing import refused, route_reviewers
 from ajantrik.core.util import FactoryError, glob_match
 from ajantrik.kit.project import Project, list_presets
 from ajantrik.kit.render import render
-from ajantrik.kit.schema import FactoryConfig, migrate, warnings
+from ajantrik.kit.schema import FactoryConfig, default_stages, migrate, warnings
 
 from .conftest import sh
 
-MOVE = Path("/home/deep/Documents/Moveai/Engineering/repos/move-software-factories")
-ORIGINALS = {"python-qt": MOVE / "mocap-desktop-software-factory-claude-code",
-             "react-vite": MOVE / "accounts-portal-software-factory-claude-code",
-             "python-ts-data": Path("/home/deep/Documents/Moveai/personal/omnigrid")}
+REPO = Path(__file__).resolve().parents[1]
 
 
 def cfg(**kw) -> FactoryConfig:
@@ -221,10 +218,26 @@ def test_glob_semantics():
     assert not glob_match("src/app.ts", "*.tsx")
 
 
-def test_python_qt_routing_matches_the_original_rules(tmp_path):
-    p = Project(tmp_path)
-    p.init_from_preset("python-qt")
-    c = p.load().cfg.model_dump()  # type: ignore[union-attr]
+def routed(*reviewers: dict, **kw) -> dict:
+    """The default loop plus routed reviewers (fed from the gate, back to `main` on failure)."""
+    stages = [s.model_dump(exclude_defaults=True) | {"kind": s.kind} for s in default_stages()]
+    for st in stages:
+        if st["id"] == "gate":
+            st["next"] = [*st["next"], *(r["id"] for r in reviewers)]
+        elif st.get("role") == "reviewer":
+            st["next"] = "integrate"
+    extra = [{"kind": "agent", "phase": "review", "role": "reviewer", "next": "integrate", "on_fail": "main", **r}
+             for r in reviewers]
+    at = next(i for i, st in enumerate(stages) if st["id"] == "integrate")
+    return cfg(loop={"stages": [*stages[:at], *extra, *stages[at:]]}, **kw).model_dump()
+
+
+def test_routing_by_paths_diff_patterns_and_scoped_patterns():
+    qml = {"path_globs": ["pyside_rc/qml/", "*.qrc"],
+           "scoped_patterns": [{"paths": ["mocap_desktop_gui/"], "pattern": r"@Property|Signal\(|@Slot"}]}
+    c = routed({"id": "calib", "path_globs": ["mc_calib*", "mc/settings/"]},
+               {"id": "xplat", "path_globs": ["main.py"], "diff_patterns": ["subprocess", r"sys\.platform"]},
+               {"id": "ui", **qml}, {"id": "ux", **qml})
     r = route_reviewers(c, ["mocap_desktop_gui/mc_calib_panel.py"], {})
     assert r["calib"] and not r["xplat"] and r["code"] == "always"
     r = route_reviewers(c, ["mocap_desktop_gui/widgets.py"], {"mocap_desktop_gui/widgets.py": ["  subprocess.run(x)"]})
@@ -235,17 +248,17 @@ def test_python_qt_routing_matches_the_original_rules(tmp_path):
     assert r["ui"] and r["ux"] and not r["calib"]
 
 
-def test_routing_exclusions_metrics_and_refusals(tmp_path):
-    p = Project(tmp_path)
-    p.init_from_preset("react-vite")
-    c = p.load().cfg.model_dump()  # type: ignore[union-attr]
+def test_routing_exclusions_metrics_and_refusals():
+    ui = {"path_globs": ["src/components/*.tsx"], "exclude_globs": ["__test__/", "__tests__/"]}
+    c = routed({"id": "review-ui", "agent": "reviewer-ui", **ui}, {"id": "ux", **ui},
+               security={"refuse_patterns": [{"paths": ["package.json"],
+                                              "pattern": r'"(preinstall|install|postinstall|prepare)"\s*:'}]})
     r = route_reviewers(c, ["src/components/__tests__/Button.test.tsx"], {})
     assert not r["review-ui"] and not r["ux"]
+    assert route_reviewers(c, ["src/components/Button.tsx"], {})["review-ui"]
     assert refused(c, ["package.json"], {"package.json": ['    "postinstall": "node x.js",']})
     assert not refused(c, ["package.json"], {"package.json": ['    "lodash": "^4.17.21",']})
-    p2 = Project(tmp_path / "og")
-    p2.init_from_preset("python-ts-data")
-    c2 = p2.load().cfg.model_dump()  # type: ignore[union-attr]
+    c2 = routed({"id": "deploy", "path_globs": ["deploy.sh"], "metrics": [{"key": "data_mb_delta", "gt": 1.0}]})
     assert route_reviewers(c2, ["README.md"], {}, {"data_mb_delta": 2.5})["deploy"]
     assert not route_reviewers(c2, ["README.md"], {}, {"data_mb_delta": 0.1})["deploy"]
 
@@ -253,7 +266,7 @@ def test_routing_exclusions_metrics_and_refusals(tmp_path):
 # ---- presets and render ----------------------------------------------------------------------------------
 def test_every_preset_loads_and_renders(tmp_path):
     names = [x["name"] for x in list_presets()]
-    assert {"blank", "python-qt", "react-vite", "python-ts-data"} <= set(names)
+    assert names == ["default"]
     for name in names:
         root = tmp_path / name
         root.mkdir()
@@ -269,35 +282,38 @@ def test_every_preset_loads_and_renders(tmp_path):
         assert data["repo"]["name"]
 
 
-@pytest.mark.skipif(not MOVE.is_dir(), reason="the hand-built factories are not on this machine")
-@pytest.mark.parametrize("preset", ["python-qt", "react-vite", "python-ts-data"])
-def test_presets_reproduce_the_hand_built_factories(tmp_path, preset):
-    original = ORIGINALS[preset]
-    root = tmp_path / preset
-    root.mkdir()
-    sh("git", "init", "-q", cwd=root)
-    p = Project(root)
-    p.init_from_preset(preset)
-    render(p)
-    from ajantrik.kit.project import split_frontmatter
+def test_default_preset_is_generic(tmp_path):
+    """The default preset carries the generic agents, skills and loop, without any repo's connections."""
+    sh("git", "init", "-q", cwd=tmp_path)
+    p = Project(tmp_path)
+    p.init_from_preset("default", name="demo")
+    assert render(p).errors == []
+    loaded = p.load()
+    assert set(loaded.agents) == {"spec-writer", "architect", "test-author", "builder-main", "reviewer-code",
+                                  "reviewer-security", "integrator"}
+    assert set(loaded.skills) == {"establish-test-setup", "read-before-edit", "run-checks", "smallest-change",
+                                  "test-first"}
+    data = p.raw()
+    assert data["repo"]["name"] == "demo" and data["delivery"]["mode"] == "none"
+    assert data["connections"]["tickets"] == {"provider": "none", "write_back": "none"}
+    assert {g["key"] for g in data["gate"]["steps"]} == {"pii", "conflict-markers"}
+    assert "env:" not in p.yaml_path.read_text()  # no credential references
 
-    orig_agents = sorted(f.stem for f in (original / ".claude" / "agents").glob("*.md"))
-    assert sorted(f.stem for f in (root / ".claude" / "agents").glob("*.md")) == orig_agents
-    for name in orig_agents:
-        want_meta, want = split_frontmatter((original / ".claude" / "agents" / f"{name}.md").read_text())
-        got_meta, got = split_frontmatter((root / ".claude" / "agents" / f"{name}.md").read_text())
-        got = got.split("-->\n\n", 1)[-1]  # the generated-file banner
-        # bodies differ only where the preset moved repo scripts to .factory/harness/
-        norm = lambda s: s.replace(".factory/harness/", ".factory/").strip()  # noqa: E731
-        assert norm(got) == norm(want), name
-        assert got_meta["model"] == want_meta["model"], name
-        assert set(got_meta.get("skills") or []) == set(want_meta.get("skills") or []), name
-    want_settings = json.loads((original / ".claude" / "settings.json").read_text())
-    got_settings = json.loads((root / ".claude" / "settings.json").read_text())
-    assert got_settings == want_settings
-    for skill in (original / ".claude" / "skills").iterdir():
-        if skill.name != "factory":
-            assert (root / ".claude" / "skills" / skill.name / "SKILL.md").is_file()
+
+@pytest.mark.skipif(not (REPO / ".factory" / "config" / "factory.yaml").is_file(),
+                    reason="this repo's own factory is not checked in")
+def test_default_preset_matches_this_repos_factory(tmp_path):
+    """The default preset is the factory ajantrik runs on itself: same agents, skills and loop."""
+    sh("git", "init", "-q", cwd=tmp_path)
+    p = Project(tmp_path)
+    p.init_from_preset("default", name="demo")
+    ours = REPO / ".factory" / "config"
+    for sub, pattern in (("agents", "*.md"), ("skills", "*/SKILL.md")):
+        want = {f.relative_to(ours / sub): f.read_text() for f in (ours / sub).glob(pattern)}
+        got = {f.relative_to(p.config_dir / sub): f.read_text() for f in (p.config_dir / sub).glob(pattern)}
+        assert want and got == want, sub
+    mine = yaml.safe_load((ours / "factory.yaml").read_text())["loop"]["stages"]
+    assert [(s["id"], s["kind"]) for s in p.raw()["loop"]["stages"]] == [(s["id"], s["kind"]) for s in mine]
 
 
 def test_render_keeps_user_settings_and_human_files(git_repo, factory):

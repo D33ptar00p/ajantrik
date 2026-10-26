@@ -106,7 +106,7 @@ def test_studio_serves_every_project_under_its_own_prefix(tmp_path):
         assert code == 200 and [p["id"] for p in projects] == ["alpha"]
         code, info = call("POST", "/api/projects/inspect", {"path": str(b)})
         assert code == 200 and info["git"] and not info["configured"]
-        code, res = call("POST", "/api/projects", {"path": str(b), "runtime": "codex-cli", "preset": "blank"})
+        code, res = call("POST", "/api/projects", {"path": str(b), "runtime": "codex-cli", "preset": "default"})
         assert code == 200 and res["set_up"] and res["project"]["id"] == "beta"
         code, res = call("POST", "/api/projects", {"path": str(b), "runtime": "api", "api": {"api_key_ref": "sk-live-123"}})
         assert code == 400 and "reference" in res["error"]
