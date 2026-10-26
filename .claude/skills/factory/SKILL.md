@@ -47,11 +47,11 @@ fail / CHANGES → back to design, main (max 3 rounds, then needs-human)
 |---|---|---|---|---|
 | spec | agent | plan | `spec-writer` | `spec.md` |
 | design | agent | plan | `architect` | `design.md` |
-| guardrails | gate | review | `factory.py gate`: secrets | `round-<N>/gate.log`, `gate.json` |
+| guardrails | gate | guardrails | `factory.py gate`: secrets | `round-<N>/gate.log`, `gate.json` |
 | approval | approval |  | you (`/factory go`) |  |
 | tests | agent | build | `test-author` | `tests.md` |
 | main | builder | build | `builder-main` | `build-main.md` + commits |
-| gate | gate | review | `factory.py gate`: no steps | `round-<N>/gate.log`, `gate.json` |
+| gate | gate | guardrails | `factory.py gate`: no steps | `round-<N>/gate.log`, `gate.json` |
 | code | reviewer | review | `reviewer-code` | `round-<N>/review-code.md` |
 | security | reviewer | review | `reviewer-security` | `round-<N>/review-security.md` |
 | integrate | integrator | integrate | `integrator` | `decision.md` (+ `pr-title.txt`, `pr.md`) |

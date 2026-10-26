@@ -1,0 +1,155 @@
+# The default factory: the generic loop ajantrik runs on itself. Agents and skills come with the
+# preset; edit them in .factory/config/agents and .factory/config/skills, or in the studio.
+version: 2
+repo:
+  name: my-repo
+  default_base: main
+  worktree_root: ../{repo}-factory
+  context_files:
+  - CLAUDE.md
+  - AGENTS.md
+runtime:
+  kind: claude-code
+  default_model: sonnet
+loop:
+  max_rounds: 3
+  stages:
+  - id: spec
+    kind: agent
+    title: Spec
+    phase: plan
+    agent: spec-writer
+    output: spec.md
+    rerun_on_rework: scope
+    pos:
+      x: 40
+      y: 50
+  - id: design
+    kind: agent
+    title: Design
+    phase: plan
+    agent: architect
+    output: design.md
+    read_builders: true
+    rerun_on_rework: always
+    pos:
+      x: 40
+      y: 182
+  - id: guardrails
+    kind: gate
+    title: Prevent Secret
+    pos:
+      x: 280
+      y: 224
+    phase: guardrails
+    on_fail: design
+    steps:
+    - secrets
+  - id: approval
+    kind: approval
+    title: Approve
+    note: approve the spec and design
+    pos:
+      x: 456
+      y: 48
+  - id: tests
+    kind: agent
+    title: Tests
+    phase: build
+    agent: test-author
+    output: tests.md
+    pos:
+      x: 688
+      y: 40
+  - id: main
+    kind: agent
+    title: main
+    phase: build
+    role: builder
+    description: the whole repository
+    pos:
+      x: 628
+      y: 182
+  - id: gate
+    kind: gate
+    title: Gate
+    phase: guardrails
+    next:
+    - code
+    - security
+    on_fail: main
+    pos:
+      x: 922
+      y: 50
+  - id: code
+    kind: agent
+    title: code
+    phase: review
+    role: reviewer
+    next: integrate
+    on_fail: main
+    pos:
+      x: 922
+      y: 182
+  - id: security
+    kind: agent
+    title: security
+    phase: review
+    role: reviewer
+    on_fail: main
+    pos:
+      x: 922
+      y: 314
+  - id: integrate
+    kind: agent
+    title: Integrate
+    phase: integrate
+    agent: integrator
+    pos:
+      x: 1216
+      y: 50
+gate:
+  timeout_min: 20
+  setup: []
+  # Guardrails from the library (studio: Guardrails → + From library). Add your repo's own checks too, e.g.
+  #   - key: tests
+  #     chip: test
+  #     cmd: python -m pytest -q --junitxml="$OUT/junit.xml"
+  #     junit: junit.xml
+  #   - key: lint
+  #     cmd: ruff check $(git diff --name-only --diff-filter=ACMR "$MERGE_BASE" HEAD -- '*.py')
+  steps:
+  - key: pii
+    chip: pii
+    cmd: python3 "$FACTORY_DIR/security/pii_scan.py" --out "$OUT/pii.json" --git "$WORKTREE" "$MERGE_BASE"
+  - key: conflict-markers
+    chip: merge
+    cmd: |
+      if git diff -U0 --no-color "$MERGE_BASE" HEAD | grep -nE '^\+(<{7}|>{7})( |$)|^\+={7}$'; then
+        echo "conflict-markers: unresolved merge conflict markers added"
+        exit 1
+      fi
+  secrets: true
+  clean_tree: true
+preflight: []
+worktree: []
+conventions:
+  branch: '{type}/{key}_{words}'
+  branch_no_ticket: '{type}/{num}_{words}'
+  branch_types:
+    Bug: bugfix
+    default: feature
+  commit: '<type>: <what>'
+connections:
+  git:
+    provider: github
+    remote: origin
+  tickets:
+    provider: none
+    write_back: none
+delivery:
+  mode: none
+  require_approval: true
+  pos:
+    x: 1584
+    y: 48

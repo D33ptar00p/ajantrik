@@ -37,8 +37,8 @@ Needs human, where every approval and anything that needs a person waits.
 ```bash
 uv tool install ".[api]"            # or: uv sync --extra api && uv run factory ...
 cd /path/to/your/repo
-factory presets                     # blank, python-qt, react-vite, python-ts-data
-factory init --preset blank         # writes .factory/config/ and renders .claude/ + .factory/
+factory presets                     # default
+factory init                        # writes .factory/config/ and renders .claude/ + .factory/
 factory studio                      # edit loop, agents, skills, guardrails, connections, delivery, runtime
 factory doctor                      # config, render drift, git, tickets and runtime checks
 ```
@@ -119,7 +119,7 @@ ajantrik/
       backends/   cli_agents.py (claude -p, codex exec), llm_api.py (LiteLLM tool loop), tools.py (guarded tools)
   studio/         local web UI + API (127.0.0.1, token, no build step)
 library/          generic agents and skills, the starting point for new ones
-presets/          blank, python-qt (mocap-desktop), react-vite (accounts-portal), python-ts-data (omnigrid)
+presets/          default: the generic factory this repo runs on itself (7 agents, 5 skills)
 ```
 
 In a configured repo:
@@ -278,9 +278,9 @@ The guard from the hand-built factories is kept and extended:
 
 ```bash
 uv sync --extra api
-uv run pytest            # unit, end-to-end loop (scripted backend), backends (fake CLIs), presets vs originals
+uv run pytest            # unit, end-to-end loop (scripted backend), backends (fake CLIs), the default preset
 uv run ruff check ajantrik tests && uv run mypy
 ```
 
-The preset tests compare each Move preset with its hand-built factory (agents, models, skills,
-settings) when those repos are on the machine.
+The preset tests materialise `presets/default` into a temp repo, render it, and check its agents,
+skills and loop match this repo's own `.factory/config/` (copy changes there into the preset too).

@@ -1,9 +1,0 @@
-{
-  "name": "accounts-portal-factory-harness",
-  "private": true,
-  "type": "module",
-  "description": "Staging screenshot harness for the accounts-portal factory. Uses the system Chrome; no browser download.",
-  "dependencies": {
-    "playwright-core": "1.63.0"
-  }
-}

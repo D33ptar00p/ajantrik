@@ -27,9 +27,9 @@ MINIMAL = {
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
     p = Project(tmp_path)
-    if (presets_dir() / "blank" / "factory.yaml").is_file():
+    if (presets_dir() / "default" / "factory.yaml").is_file():
         try:
-            p.init_from_preset("blank", name="demo")
+            p.init_from_preset("default", name="demo")
         except Exception:
             p = _minimal(p)
         if not p.load().ok:
@@ -572,6 +572,7 @@ def test_board_has_no_token(studio):
     assert call(port, "POST", "/board/dashboard.html", token=token, body={})[0] == 405
 
 
+@pytest.mark.skipif(not REPO_DASHBOARD.is_file(), reason="this repo's own factory is not checked in")
 def test_rendered_board_matches_the_template():
     assert REPO_DASHBOARD.read_text() == DASHBOARD.read_text()
 
