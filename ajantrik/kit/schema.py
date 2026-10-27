@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import copy
 import re
+import sys
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -732,6 +733,62 @@ class Security(_Model):
     guard: GuardText = Field(default_factory=GuardText)
 
 
+# ---- sandbox --------------------------------------------------------------------------------------
+# Anthropic's sandbox-runtime (`srt`) around everything that runs a job's code: agents' commands,
+# worktree setup, gate steps and the codex process. Mapped to srt and Claude Code by core/sandbox.py.
+class SandboxApply(_Model):
+    gate: bool = Field(True, description="Run worktree setup and every gate step inside the sandbox.")
+    codex: bool = Field(True, description="codex-cli: run the whole `codex exec` process inside the sandbox.")
+
+
+class SandboxNetwork(_Model):
+    allowed_domains: list[str] = Field(
+        default_factory=lambda: ["pypi.org", "files.pythonhosted.org", "registry.npmjs.org"],
+        description="Hosts commands may reach (`*.example.com`, `host:port`). Empty: no network.")
+    denied_domains: list[str] = Field(default_factory=list, description="Blocked even when an allowed entry matches.")
+    allow_unix_sockets: list[str] = Field(default_factory=list, description="Unix socket paths (macOS).")
+    allow_all_unix_sockets: bool = Field(False, description="Every unix socket, e.g. docker.sock. Weakens isolation.")
+    allow_local_binding: bool = Field(False, description="macOS: listen on and connect to localhost (dev servers, "
+                                                         "e2e). Linux allows this inside the sandbox already.")
+    http_proxy_port: int | None = Field(None, ge=1, le=65535, description="Claude Code: your own HTTP proxy.")
+    socks_proxy_port: int | None = Field(None, ge=1, le=65535, description="Claude Code: your own SOCKS proxy.")
+
+
+class SandboxFilesystem(_Model):
+    allow_write: list[str] = Field(default_factory=list, description="Writable besides the job's worktree, job "
+                                                                     "folder and the temp dir.")
+    deny_write: list[str] = Field(
+        default_factory=lambda: [".env", ".env.*", ".factory/config/", ".claude/", ".github/workflows/"],
+        description="Never writable, even inside an allowed path.")
+    deny_read: list[str] = Field(
+        default_factory=lambda: ["~/.ssh", "~/.aws", "~/.config/gh", "~/.npmrc", "~/.netrc", "~/.git-credentials"],
+        description="Never readable. Empty: the whole machine is readable.")
+    allow_read: list[str] = Field(default_factory=list, description="Readable again inside a denied path.")
+
+
+class Sandbox(_Model):
+    enabled: bool = Field(True, description="Run agents' commands, worktree setup and gate steps in the OS sandbox.")
+    fail_if_unavailable: bool = Field(True, description="Refuse to run when the sandbox cannot start, instead of "
+                                                        "running unsandboxed.")
+    binary: str = Field("srt", description="The sandbox-runtime CLI (npm i -g @anthropic-ai/sandbox-runtime).")
+    apply: SandboxApply = Field(default_factory=SandboxApply)
+    network: SandboxNetwork = Field(default_factory=SandboxNetwork)
+    filesystem: SandboxFilesystem = Field(default_factory=SandboxFilesystem)
+    auto_allow_bash: bool = Field(True, description="Claude Code: run sandboxed Bash without a permission prompt.")
+    allow_unsandboxed_commands: bool = Field(False, description="Claude Code: let a blocked command retry outside "
+                                                                "the sandbox.")
+    excluded_commands: list[str] = Field(default_factory=list, description="Claude Code: commands that run outside "
+                                                                           "the sandbox, e.g. docker *.")
+    ignore_violations: dict[str, list[str]] = Field(default_factory=dict, description="Command pattern -> paths "
+                                                                                      "whose violations are ignored.")
+    enable_weaker_nested_sandbox: bool = Field(False, description="Inside Docker without privileges. Weakens "
+                                                                  "isolation.")
+    enable_weaker_network_isolation: bool = Field(False, description="macOS: Go tools behind a TLS-intercepting "
+                                                                     "proxy. Weakens isolation.")
+    allow_nested_user_namespaces: bool = Field(False, description="Linux: Chromium or Podman inside the sandbox. "
+                                                                  "Weakens isolation.")
+
+
 class Ui(_Model):
     port: int = Field(8000, ge=1024, le=65535)
     studio_port: int = Field(8765, ge=1024, le=65535)
@@ -751,6 +808,7 @@ class FactoryConfig(_Model):
     connections: Connections = Field(default_factory=Connections)
     delivery: Delivery = Field(default_factory=Delivery)
     security: Security = Field(default_factory=Security)
+    sandbox: Sandbox = Field(default_factory=Sandbox)
     ui: Ui = Field(default_factory=Ui)
 
     @model_validator(mode="before")
@@ -862,7 +920,30 @@ def warnings(cfg: FactoryConfig) -> list[str]:
         out.append("tickets.mode=mcp only works in the interactive claude-code runtime; headless runs use REST.")
     if t.write_back in ("comment", "transition") and t.mode == "mcp":
         out.append("Jira write-back runs from the delivery step over REST; set tickets.mode=rest with a token.")
+    sb = cfg.sandbox
     if cfg.runtime.kind == "codex-cli":
-        out.append("codex-cli has no tool hooks: the factory guard cannot vet each command. The Codex sandbox "
-                   f"({cfg.runtime.codex_cli.sandbox}) is the boundary.")
+        boundary = "the OS sandbox (srt) around the codex process and the Codex sandbox" if sb.enabled and \
+            sb.apply.codex else f"the Codex sandbox ({cfg.runtime.codex_cli.sandbox})"
+        out.append(f"codex-cli has no tool hooks: the factory guard cannot vet each command. {boundary} is the "
+                   "boundary.")
+    if not sb.enabled:
+        out.append("sandbox is off: agents' commands and gate steps (your tests run agent-written code) run "
+                   "directly on this machine.")
+    else:
+        if not sb.apply.gate:
+            out.append("sandbox.apply.gate is off: worktree setup and gate steps run agent-written code outside "
+                       "the sandbox.")
+        if sb.allow_unsandboxed_commands:
+            out.append("sandbox.allow_unsandboxed_commands lets Claude Code retry a blocked command outside the "
+                       "sandbox.")
+        weak = [k for k in ("enable_weaker_nested_sandbox", "enable_weaker_network_isolation",
+                            "allow_nested_user_namespaces") if getattr(sb, k)]
+        if sb.network.allow_all_unix_sockets:
+            weak.append("network.allow_all_unix_sockets")
+        if weak:
+            out.append(f"sandbox: {', '.join(weak)} weaken the isolation.")
+        if any(d.strip() == "*" for d in sb.network.allowed_domains):
+            out.append("sandbox.network.allowed_domains has `*`: commands can reach any host.")
+        if sys.platform.startswith("win"):
+            out.append("sandbox: Windows support in sandbox-runtime is alpha.")
     return out

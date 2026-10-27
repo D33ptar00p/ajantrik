@@ -32,8 +32,11 @@ FRAMING = """You are the `{agent}` agent of a software factory working on the {r
 orchestrator gives you one task; you do it and write the file it names. Your instructions follow.
 Tools: {tools}. Paths can be absolute; relative paths start in the job worktree. Every command and
 file access is checked by the factory guard: a `factory guard: blocked` result is a rule, not an
-error to work around; report it in your output file instead.
+error to work around; report it in your output file instead.{sandbox}
 """
+SANDBOX_NOTE = """ Commands run in an OS sandbox: you can write only
+the job worktree, the job folder and the temp dir, and reach only the allowed hosts. A denied write
+or connection is a rule too; report it the same way."""
 
 
 def build_backend(cfg: FactoryConfig) -> Backend:
@@ -41,15 +44,17 @@ def build_backend(cfg: FactoryConfig) -> Backend:
     if rt.kind == "claude-cli":
         return ClaudeCliBackend(rt.claude_cli.binary, rt.claude_cli.permission_mode, rt.claude_cli.extra_args)
     if rt.kind == "codex-cli":
-        return CodexCliBackend(rt.codex_cli.binary, rt.codex_cli.sandbox, rt.codex_cli.extra_args)
+        sb = cfg.sandbox.model_dump() if cfg.sandbox.apply.codex else None
+        return CodexCliBackend(rt.codex_cli.binary, rt.codex_cli.sandbox, rt.codex_cli.extra_args, os_sandbox=sb)
     if rt.kind == "api":
-        return LlmApiBackend(rt.api.model_dump())
+        return LlmApiBackend(rt.api.model_dump(), sandbox=cfg.sandbox.model_dump())
     raise FactoryError("runtime.kind is claude-code: run /factory in a Claude Code session in the repo, or pick "
                        "claude-cli, codex-cli or api to run headless")
 
 
 def system_prompt(cfg: FactoryConfig, agent: AgentDef, skills: dict[str, SkillDef]) -> str:
-    parts = [FRAMING.format(agent=agent.name, repo=cfg.repo.name, tools=", ".join(agent.tools)),
+    parts = [FRAMING.format(agent=agent.name, repo=cfg.repo.name, tools=", ".join(agent.tools),
+                            sandbox=SANDBOX_NOTE if cfg.sandbox.enabled else ""),
              "Read these repo files first when they exist: " + ", ".join(cfg.repo.context_files) + ".",
              "", agent.body.strip()]
     for name in agent.skills:

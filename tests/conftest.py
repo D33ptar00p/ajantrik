@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -71,3 +72,39 @@ def isolated_home(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.
     home = tmp_path_factory.mktemp("ajantrik-home")
     monkeypatch.setenv("AJANTRIK_HOME", str(home))
     return home
+
+
+FAKE_SRT = """#!/usr/bin/env python3
+import json, os, sys
+args = sys.argv[1:]
+assert args[0] == "--settings", args
+settings = json.load(open(args[1]))
+# Like the real srt (0.0.81): these lists must be present, even empty.
+for section, keys in {"network": ("allowedDomains", "deniedDomains"),
+                      "filesystem": ("denyRead", "allowRead", "allowWrite", "denyWrite")}.items():
+    missing = [k for k in keys if k not in settings.get(section, {})]
+    if missing:
+        sys.exit(f"Error: {args[1]} does not hold a valid config: {section}.{missing[0]}: Required")
+log = os.environ.get("FAKE_SRT_LOG")
+if log:
+    with open(log, "a") as f:
+        f.write(json.dumps({"settings": json.load(open(args[1])), "argv": args[2:], "cwd": os.getcwd()}) + "\\n")
+os.execvp(args[2], args[2:])
+"""
+
+
+@pytest.fixture(autouse=True)
+def fake_srt(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The sandbox is on by default and fails closed. Tests get a pass-through `srt` that logs each call
+    (settings, argv, cwd) to the returned file; the live tests (-m live) use the real one."""
+    from ajantrik.core import sandbox
+
+    bin_dir = tmp_path_factory.mktemp("srt-bin")
+    srt = bin_dir / "srt"
+    srt.write_text(FAKE_SRT)
+    srt.chmod(0o755)
+    log = bin_dir / "calls.jsonl"
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    monkeypatch.setenv("FAKE_SRT_LOG", str(log))
+    monkeypatch.setattr(sandbox, "PLATFORM_DEPS", {})
+    return log

@@ -1,6 +1,8 @@
 """The tools an API-backed agent gets. Same names and arguments as Claude Code's (Read, Grep, Glob,
 Edit, Write, Bash), so agent instructions read the same in every runtime, and every call passes
-through the repo's guard (strict factory tier) before it runs."""
+through the repo's guard (strict factory tier) before it runs. With the sandbox on, Bash runs inside
+srt, and the file tools keep to the same rules: write only the worktree, the job folder, the temp dir
+and `allow_write`, never `deny_write`; never read `deny_read` (unless `allow_read`)."""
 
 from __future__ import annotations
 
@@ -9,8 +11,11 @@ import re
 import shutil
 import subprocess
 from collections.abc import Callable
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
+
+from ajantrik.core import sandbox as sbx
 
 from .base import agent_env, load_guard
 
@@ -53,8 +58,10 @@ class ToolError(Exception):
 
 class Toolbox:
     def __init__(self, root: Path, worktree: Path, agent: str, allowed: list[str], output_limit: int = 20000,
-                 command_timeout: int = 600):
+                 command_timeout: int = 600, sandbox: dict[str, Any] | None = None, job_dir: Path | None = None):
         self.root, self.worktree, self.agent = root, worktree, agent
+        self.sandbox = sandbox if sbx.enabled(sandbox) else None
+        self.job_dir = job_dir
         self.allowed = [t for t in allowed if t in SCHEMAS]
         self.limit = output_limit
         self.command_timeout = command_timeout
@@ -90,7 +97,31 @@ class Toolbox:
         path = Path(os.path.normpath(self.worktree / os.path.expanduser(p)))
         if not write and not any(path == r or r in path.parents for r in self.readable_roots):
             raise ToolError(f"{path} is outside the repo, the job worktrees and /tmp")
+        if self.sandbox:
+            self.sandboxed(path, write)
         return path
+
+    def _resolve(self, entries: list[str] | None) -> list[str]:
+        return [os.path.normpath(self.worktree / os.path.expanduser(e)) for e in entries or []]
+
+    def sandboxed(self, path: Path, write: bool) -> None:
+        """The sandbox's file rules for the Read/Grep/Glob/Edit/Write tools, which srt does not see."""
+        assert self.sandbox is not None
+        fs = self.sandbox.get("filesystem") or {}
+
+        def hit(entries: list[str]) -> bool:
+            s = str(path)
+            return any(s == e or s.startswith(e.rstrip("/") + "/") or fnmatch(s, e) for e in entries)
+
+        if hit(self._resolve(fs.get("deny_read"))) and not hit(self._resolve(fs.get("allow_read"))):
+            raise ToolError(f"sandbox: {path} is not readable (sandbox.filesystem.deny_read)")
+        if not write:
+            return
+        if hit(self._resolve(fs.get("deny_write"))):
+            raise ToolError(f"sandbox: {path} is not writable (sandbox.filesystem.deny_write)")
+        writable = sbx.writable_for(self.worktree, self.job_dir)
+        if not hit([*(os.path.normpath(w) for w in writable), *self._resolve(fs.get("allow_write"))]):
+            raise ToolError(f"sandbox: {path} is outside the job worktree, the job folder and the temp dir")
 
     def read(self, file_path: str, offset: int = 1, limit: int = 2000) -> str:
         path = self.path(file_path)
@@ -150,7 +181,13 @@ class Toolbox:
         env = agent_env(dict(os.environ))
         env["FACTORY_GUARD"] = "strict"
         try:
-            r = subprocess.run(["bash", "-c", command], cwd=self.worktree, capture_output=True, text=True,
+            name = f"{self.job_dir.name if self.job_dir else self.worktree.name}-{self.agent}"
+            argv = sbx.wrap(["bash", "-c", command], self.sandbox, sbx.settings_path(self.root, name),
+                            sbx.writable_for(self.worktree, self.job_dir))
+        except sbx.SandboxUnavailable as e:
+            raise ToolError(str(e)) from None
+        try:
+            r = subprocess.run(argv, cwd=self.worktree, capture_output=True, text=True,
                                errors="replace", env=env, timeout=min(int(timeout or self.command_timeout),
                                                                       self.command_timeout))
         except subprocess.TimeoutExpired:

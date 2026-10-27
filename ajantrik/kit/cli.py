@@ -8,7 +8,7 @@
     factory projects                                      list projects (repos this machine's Ajantrik knows)
     factory projects add <path> [--runtime R] [--preset P] [--name N]   register a repo, setting up its factory
     factory projects remove <id>                          forget a project (its files stay)
-    factory doctor [--only git|tickets|runtime]           check connections and the runtime
+    factory doctor [--only git|tickets|runtime|sandbox]   check connections, the runtime and the sandbox
     factory run "<request>" [--ticket K] [--base B] [--wait]   headless: create a job and drive it
     factory go <job> [--wait]                             headless: approve the waiting stage and continue
     factory resume <job> [--wait]                         headless: continue a job
@@ -97,7 +97,21 @@ def doctor(project: Project, only: str | None = None) -> list[dict[str, Any]]:
         out.append({"name": f"tickets ({cfg.connections.tickets.provider})", "ok": ok, "detail": detail})
     if only in (None, "runtime"):
         out.append(check_runtime(cfg))
+    if only in (None, "sandbox"):
+        out.append(check_sandbox(cfg))
     return out
+
+
+def check_sandbox(cfg: Any) -> dict[str, Any]:
+    from ajantrik.core import sandbox
+
+    sb = cfg.sandbox
+    if not sb.enabled:
+        return {"name": "sandbox (off)", "ok": True, "detail": "off: commands run directly on this machine"}
+    ok, detail = sandbox.available(sb.model_dump())
+    if not ok and not sb.fail_if_unavailable:
+        detail += " Jobs run unsandboxed (fail_if_unavailable is off)."
+    return {"name": f"sandbox ({sandbox.platform()})", "ok": ok, "detail": detail}
 
 
 def check_runtime(cfg: Any) -> dict[str, Any]:
@@ -155,7 +169,7 @@ def build_parser() -> argparse.ArgumentParser:
     prm = prs.add_parser("remove")
     prm.add_argument("id")
     d = sub.add_parser("doctor")
-    d.add_argument("--only", choices=["git", "tickets", "runtime"])
+    d.add_argument("--only", choices=["git", "tickets", "runtime", "sandbox"])
     run = sub.add_parser("run")
     run.add_argument("request", nargs="?", default="")
     run.add_argument("--ticket")

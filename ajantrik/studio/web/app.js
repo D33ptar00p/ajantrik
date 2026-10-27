@@ -339,6 +339,7 @@ const ICONS = {
     'M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71'],
   delivery: ['M22 2L11 13', 'M22 2l-7 20-4-9-9-4 20-7z'],
   runtime: ['M4 4h16v12H4z', 'M8 20h8', 'M12 16v4', 'M8 9l2 2-2 2', 'M13 13h3'],
+  sandbox: ['M21 8l-9-5-9 5v8l9 5 9-5z', 'M3 8l9 5 9-5', 'M12 13v8'],
   yaml: ['M16 18l6-6-6-6', 'M8 6l-6 6 6 6'],
 }
 function icon(name) {
@@ -366,6 +367,7 @@ const TABS = [
   ['connections', 'Connections', renderConnections, 'Connect'],
   ['delivery', 'Delivery', renderDelivery, 'Deliver'],
   ['runtime', 'Runtime', renderRuntime, 'Runtime'],
+  ['sandbox', 'Sandbox', renderSandbox, 'Sandbox'],
   ['yaml', 'Raw YAML', renderYaml, 'YAML'],
 ]
 
@@ -1953,7 +1955,7 @@ function autoCheck(only) {
 function doctorButton(only, label) {
   const st = connStatuses().results[only]
   const badge = st ? h('span', { class: `cstate ${st.state}` },
-    only === 'runtime' && st.state !== 'checking' ? (st.state === 'ok' ? 'Working' : 'Failing') : CONN_LABELS[st.state]) : null
+    (only === 'runtime' || only === 'sandbox') && st.state !== 'checking' ? (st.state === 'ok' ? 'Working' : 'Failing') : CONN_LABELS[st.state]) : null
   const btn = h('button', { type: 'button', disabled: !!st && st.state === 'checking', onclick: () => checkConnection(only) }, label)
   const rows = st && st.state !== 'checking'
     ? [...st.rows.map((x) => h('div', { class: `msg ${x.ok ? 'ok' : 'error'}` }, h('b', {}, (x.ok ? 'OK ' : 'Failed ') + x.name + ' '), x.detail || '')),
@@ -2098,6 +2100,73 @@ function renderRuntime() {
       mapEditor(['runtime', 'models'], 'alias', 'model id', ['opus', 'sonnet', 'haiku'])),
     section('Per-agent overrides', mapEditor(['runtime', 'per_agent'], 'agent', 'model', agents)),
     section('Check', doctorButton('runtime', 'Probe runtime')))
+}
+
+// ---- Sandbox -------------------------------------------------------------------------------------
+// Anthropic's sandbox-runtime (srt) around agents' commands, worktree setup, gate steps and the codex
+// process; Claude Code gets the same rules as the `sandbox` block of .claude/settings.json.
+const SANDBOX_HOW = {
+  'claude-code': 'Claude Code runs every Bash command in the sandbox (rendered into .claude/settings.json); factory.py sandboxes worktree setup and the gate with srt.',
+  'claude-cli': '`claude -p` runs every Bash command in the sandbox (rendered into .claude/settings.json); worktree setup and the gate run under srt.',
+  'codex-cli': 'The whole `codex exec` process runs under srt, with the OpenAI hosts allowed; worktree setup and the gate too.',
+  api: 'The Bash tool runs each command under srt; Read, Edit and Write keep to the same file rules. Worktree setup and the gate run under srt.',
+}
+function renderSandbox() {
+  const S_ = ['sandbox']
+  const on = val([...S_, 'enabled']) !== false
+  const kind = val(['runtime', 'kind'])
+  const warns = (S.issues.warnings || []).filter((w) => /sandbox/i.test(w))
+  const weak = (label, key, help) => {
+    const path = [...S_, ...[key].flat()]
+    return [field(label, path, { type: 'bool', rerender: true, help }),
+      val(path) ? h('div', { class: 'msg warn' }, `${label} weakens the isolation.`) : null]
+  }
+  const head = section('Sandbox',
+    h('p', { class: 'help' }, 'Feature development and testing run inside an OS sandbox (Anthropic sandbox-runtime, `srt`): agents\' commands, dependency installs, test runs and every gate step can write only the job\'s own worktree, its job folder and the temp dir, and reach only the hosts you allow.'),
+    grid(field('Enabled', [...S_, 'enabled'], { type: 'bool', rerender: true, help: 'On by default.' }),
+      on ? field('Fail if unavailable', [...S_, 'fail_if_unavailable'], { type: 'bool', rerender: true, help: 'Refuse to run when the sandbox cannot start, instead of running unsandboxed.' }) : null),
+    on ? h('div', { class: 'msg info' }, SANDBOX_HOW[kind] || '') : h('div', { class: 'msg warn' }, 'The sandbox is off: agents\' commands and your tests (agent-written code) run directly on this machine.'),
+    ...warns.map((w) => h('div', { class: 'msg warn' }, w)),
+    on && val([...S_, 'fail_if_unavailable']) === false ? h('div', { class: 'msg warn' }, 'When srt is missing, jobs run without any sandbox and only a warning says so.') : null,
+    doctorButton('sandbox', 'Check sandbox'))
+  if (!on) return h('div', {}, head)
+  const N = [...S_, 'network'], F = [...S_, 'filesystem']
+  const iv = val([...S_, 'ignore_violations']) || {}
+  const ivId = nextId('iv')
+  return h('div', {}, head,
+    section('Applies to',
+      grid(field('Worktree setup and gate steps', [...S_, 'apply', 'gate'], { type: 'bool', rerender: true, help: 'Your tests and linters run code the agents wrote.' }),
+        kind === 'codex-cli' ? field('The codex process', [...S_, 'apply', 'codex'], { type: 'bool', help: 'On macOS srt is then the boundary and codex runs with danger-full-access (Seatbelt does not nest).' }) : null)),
+    section('Network',
+      grid(field('Allowed hosts', [...N, 'allowed_domains'], { type: 'list', placeholder: 'pypi.org\n*.github.com', help: '`*.example.com` and `host:port` work. Empty: no network at all.' }),
+        field('Denied hosts', [...N, 'denied_domains'], { type: 'list', help: 'Win over the allowed hosts.' }),
+        field('Unix sockets', [...N, 'allow_unix_sockets'], { type: 'list', placeholder: '/var/run/docker.sock', help: 'macOS only.' }),
+        field('Allow local binding', [...N, 'allow_local_binding'], { type: 'bool', help: 'macOS: dev servers and e2e tests listening on localhost. Linux allows this inside the sandbox already.' }),
+        field('HTTP proxy port', [...N, 'http_proxy_port'], { type: 'number', min: 1, max: 65535, help: 'Claude Code: route through your own proxy.' }),
+        field('SOCKS proxy port', [...N, 'socks_proxy_port'], { type: 'number', min: 1, max: 65535 }))),
+    section('Filesystem',
+      h('p', { class: 'help' }, 'Always writable: the job worktree, the job folder and the temp dir. Relative paths start in the job worktree.'),
+      grid(field('Also writable', [...F, 'allow_write'], { type: 'list' }),
+        field('Never writable', [...F, 'deny_write'], { type: 'list', help: 'Also applies to the Edit and Write tools.' }),
+        field('Never readable', [...F, 'deny_read'], { type: 'list', help: 'Empty: the whole machine is readable.' }),
+        field('Readable again', [...F, 'allow_read'], { type: 'list', help: 'Inside a never-readable path.' }))),
+    kind === 'claude-code' || kind === 'claude-cli' ? section('Claude Code',
+      grid(field('Run sandboxed Bash without asking', [...S_, 'auto_allow_bash'], { type: 'bool' }),
+        field('Allow unsandboxed retry', [...S_, 'allow_unsandboxed_commands'], { type: 'bool', rerender: true, help: 'Lets a blocked command run again outside the sandbox. Off is strict mode.' }),
+        field('Excluded commands', [...S_, 'excluded_commands'], { type: 'list', placeholder: 'docker *', help: 'Run outside the sandbox. `python3 .factory/factory.py *` always is: it sandboxes the gate itself.' }))) : null,
+    section('Advanced',
+      grid(...weak('Weaker nested sandbox', 'enable_weaker_nested_sandbox', 'Inside an unprivileged Docker container.'),
+        ...weak('Weaker network isolation', 'enable_weaker_network_isolation', 'macOS: Go tools behind a TLS-intercepting proxy.'),
+        ...weak('Nested user namespaces', 'allow_nested_user_namespaces', 'Linux: Chromium or Podman inside the sandbox.'),
+        ...weak('All unix sockets', ['network', 'allow_all_unix_sockets'], 'Every unix socket, e.g. docker.sock.'),
+        field('Sandbox binary', [...S_, 'binary'], { help: 'npm i -g @anthropic-ai/sandbox-runtime' })),
+      h('div', { class: 'field wide' }, h('label', { for: ivId }, 'Ignore violations'),
+        h('textarea', { id: ivId, rows: 3, class: 'mono', placeholder: 'command pattern: path, path',
+          onchange: (e) => setIn([...S_, 'ignore_violations'], Object.fromEntries(e.target.value.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
+            const i = l.indexOf(':')
+            return i < 0 ? [l, []] : [l.slice(0, i).trim(), l.slice(i + 1).split(',').map((s) => s.trim()).filter(Boolean)]
+          }))) }, Object.entries(iv).map(([k, v]) => `${k}: ${(v || []).join(', ')}`).join('\n')),
+        h('div', { class: 'help' }, 'One per line. Violations of these commands on these paths are not reported.'))))
 }
 
 function mapEditor(path, kLabel, vLabel, suggestions) {

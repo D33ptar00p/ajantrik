@@ -16,6 +16,8 @@ One `factory.yaml` plus markdown agents and skills defines the whole factory:
   with or without a human approval first
 - the **runtime** that runs the agents: interactive Claude Code, the Claude Code CLI, the Codex
   CLI, or any LLM API (Anthropic, OpenAI, Bedrock, a local Ollama, a LiteLLM proxy)
+- the **sandbox** the work runs in: Anthropic's [sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime)
+  around agents' commands, dependency installs, test runs and the gate, on by default
 
 You edit all of it in a local web **studio** or by hand.
 
@@ -57,7 +59,7 @@ with `--all`, it opens the Projects page, listing every registered project (see 
 For the jobs board alone, without the editor, run `.factory/ui.sh`.
 
 A project's tabs are Board, Backlog, Loop, Agents, Skills, Guardrails, Connections, Delivery,
-Runtime and Raw YAML. What the Board's actions do depends on the runtime. With a headless runtime
+Runtime, Sandbox and Raw YAML. What the Board's actions do depends on the runtime. With a headless runtime
 (`claude-cli`, `codex-cli`, `api`) the Board can approve, continue and deliver jobs. With
 `claude-code` it copies the `/factory go|deliver|rework` command for you to run, because the
 interactive session is the orchestrator.
@@ -86,7 +88,7 @@ factory studio [--port N] [--no-browser] [--all]       # the web studio
 factory projects                                       # list projects
 factory projects add <path> [--runtime R] [--preset P] [--name N]   # register a repo, setting up its factory
 factory projects remove <id>                           # forget a project (its files stay)
-factory doctor [--only git|tickets|runtime]            # check connections and the runtime
+factory doctor [--only git|tickets|runtime|sandbox]    # check connections, the runtime and the sandbox
 factory run "<request>" [--ticket K] [--base B] [--wait]   # headless: create a job and drive it
 factory go <job> [--wait]                              # headless: approve the waiting stage and continue
 factory resume <job> [--wait]                          # headless: continue a job
@@ -271,8 +273,40 @@ The guard from the hand-built factories is kept and extended:
 - Credentials are always references (`env:NAME`, `keyring:service/name`), and the schema rejects
   literal values.
 - Agent subprocesses get an environment with credentials stripped.
-- `codex-cli` has no tool hooks: the Codex sandbox (`workspace-write`, worktree and job folder, no
-  network) is the boundary, and `factory validate` says so.
+- `codex-cli` has no tool hooks: the whole `codex exec` process runs in the sandbox (below) and inside
+  it the Codex sandbox (`workspace-write`, worktree and job folder, no network), and `factory validate`
+  says so.
+
+### Sandbox
+
+The guard is rules; the sandbox is the operating system. With `sandbox.enabled` (the default), feature
+development and testing happen inside Anthropic's sandbox-runtime (`srt`: bubblewrap on Linux, Seatbelt
+on macOS, alpha on Windows):
+
+| What | How |
+|---|---|
+| agents' commands, `claude-code` / `claude-cli` | render writes the `sandbox` block of `.claude/settings.json`; Claude Code runs Bash in it. `python3 .factory/factory.py *` is excluded: it sandboxes setup and the gate itself, and delivery needs the git host |
+| agents' commands, `api` | the Bash tool runs `srt --settings … bash -c <cmd>` |
+| agents' file edits | Read, Edit and Write follow the same `deny_read` / `deny_write` rules (Claude Code: rendered permission rules; `api`: the factory's own tools) |
+| worktree setup and every gate step (`sandbox.apply.gate`) | `srt` around each `bash -c` |
+| `codex-cli` (`sandbox.apply.codex`) | `srt` around the whole `codex exec`, with the OpenAI hosts allowed. On macOS Seatbelt cannot nest, so there srt is the boundary and Codex runs with `danger-full-access` |
+
+A job's commands write only its own worktree, its job folder, the temp dir and `filesystem.allow_write`,
+and reach only `network.allowed_domains` (by default the PyPI and npm registries). Every srt option is in
+`factory.yaml` under `sandbox:` and in the studio's Sandbox tab. Each run's srt settings go to
+`.factory/.sandbox/`, where no sandboxed command can write.
+
+The sandbox **fails closed**: when it cannot start, agents and the gate refuse to run and the job goes
+to needs-human (`fail_if_unavailable: false` runs unsandboxed with a warning instead). Install it and
+check with `factory doctor --only sandbox`:
+
+```bash
+npm i -g @anthropic-ai/sandbox-runtime
+sudo apt install bubblewrap socat ripgrep      # Linux; macOS: brew install ripgrep
+```
+
+On Ubuntu 24.04+ bubblewrap may also need `kernel.apparmor_restrict_unprivileged_userns=0` or an
+AppArmor profile. Configs written before the sandbox existed get it on, with these defaults.
 
 ## Development
 

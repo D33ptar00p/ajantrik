@@ -7,7 +7,9 @@ clean-tree check are built in. Writes <out>/gate.log (redacted on exit) and <out
      "passed": 412, "failed": 0, "coverage": 86.2, "<metric>": ..., "external_only": false}
 
 Each step runs `bash -c <cmd>` in the worktree with WORKTREE BASE MERGE_BASE OUT REPO FACTORY_DIR
-and CHANGED (a file listing the changed paths) in its environment. Exit 0 is PASS.
+and CHANGED (a file listing the changed paths) in its environment. Exit 0 is PASS. With the sandbox on
+(sandbox.apply.gate), setup and steps run inside it: they write only the worktree, the round folder and
+the temp dir. The secret scan is the factory's own and runs outside.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
+from . import sandbox as sbx
 from .routing import changed_paths, merge_base
 from .util import any_match, git, read_json, write_json
 
@@ -110,9 +113,16 @@ def run_gate(root: Path, cfg: dict[str, Any], worktree: Path, base: str, out: Pa
                # could otherwise run stale bytecode.
                "PYTHONDONTWRITEBYTECODE": "1"}
         deadline = time.monotonic() + float(gcfg.get("timeout_min", 20)) * 60
+        sb = cfg.get("sandbox") or {}
+        sb = sb if (sb.get("apply") or {}).get("gate", True) else None
+        writable = sbx.writable_for(worktree, out)
+
+        def boxed(cmd: str) -> list[str]:
+            return sbx.wrap(["bash", "-c", cmd], sb, sbx.settings_path(root, f"gate-{out.parent.name}-{out.name}"),
+                            writable, say=say)
 
         for chk in gcfg.get("setup") or []:
-            r = subprocess.run(["bash", "-c", chk["test"]], cwd=worktree, env=env, capture_output=True, text=True)
+            r = subprocess.run(boxed(chk["test"]), cwd=worktree, env=env, capture_output=True, text=True)
             if r.returncode != 0:
                 say(f"gate: setup failed: {chk['error']}")
                 result.update({s["key"]: "FAIL" for s in steps})
@@ -154,7 +164,7 @@ def run_gate(root: Path, cfg: dict[str, Any], worktree: Path, base: str, out: Pa
             step_env = {**env, **{k: os.path.expandvars(v) for k, v in (s.get("env") or {}).items()}}
             with port_lock(root, bool(s.get("lock"))):
                 try:
-                    rc = subprocess.run(["bash", "-c", s["cmd"]], cwd=worktree, env=step_env, stdout=log,
+                    rc = subprocess.run(boxed(s["cmd"]), cwd=worktree, env=step_env, stdout=log,
                                         stderr=subprocess.STDOUT, timeout=timeout).returncode
                     ok = rc == 0
                 except subprocess.TimeoutExpired:

@@ -665,3 +665,18 @@ def test_the_board_offers_one_approve_and_deliver_and_a_deliver_column():
     assert "act('approve', id, 'approve', awaiting)" not in html  # approving alone would strand the job
     assert "key: 'deliver', stages: ['deliver'], label: 'Deliver'" in html
     assert "st === 'deliver' && job.agent !== 'deliver'" in html  # an approved job that nothing delivers yet
+
+
+def test_sandbox_config_and_doctor(studio):
+    port, token, repo = studio
+    status, r, _ = call(port, "POST", "/api/doctor", token=token, body={"only": "sandbox"})
+    assert status == 200 and r["data"]["args"] == ["doctor", "--only", "sandbox", "--json"]
+    assert call(port, "POST", "/api/doctor", token=token, body={"only": "nope"})[0] == 400
+    cfg = json.loads(json.dumps(MINIMAL))
+    cfg["sandbox"] = {"enabled": False, "network": {"allowed_domains": ["pypi.org"]}}
+    status, r, _ = call(port, "PUT", "/api/config", token=token, body={"config": cfg})
+    assert r["saved"] is True, r
+    saved = yaml.safe_load((repo / ".factory" / "config" / "factory.yaml").read_text())["sandbox"]
+    assert saved["enabled"] is False and saved["network"]["allowed_domains"] == ["pypi.org"]
+    cfg["sandbox"] = {"network": {"http_proxy_port": 99999}}
+    assert call(port, "PUT", "/api/config", token=token, body={"config": cfg})[1]["saved"] is False

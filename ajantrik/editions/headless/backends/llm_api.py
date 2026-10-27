@@ -34,8 +34,9 @@ class LlmApiBackend:
     name = "api"
     supports_resume = False
 
-    def __init__(self, api: dict[str, Any], completion: Any = None):
+    def __init__(self, api: dict[str, Any], completion: Any = None, sandbox: dict[str, Any] | None = None):
         self.api = api
+        self.sandbox = sandbox
         self._completion = completion  # injectable for tests
 
     def completion_fn(self) -> Any:
@@ -69,7 +70,7 @@ class LlmApiBackend:
         except Exception as e:
             return AgentResult(False, error=str(e))
         box = Toolbox(run.root, run.worktree, run.agent, run.tools, self.api.get("tool_output_limit", 20000),
-                      self.api.get("command_timeout_s", 600))
+                      self.api.get("command_timeout_s", 600), sandbox=self.sandbox, job_dir=run.job_dir)
         messages: list[dict[str, Any]] = [{"role": "system", "content": run.system},
                                           {"role": "user", "content": run.prompt}]
         usage = {"prompt_tokens": 0, "completion_tokens": 0, "turns": 0}
@@ -135,7 +136,7 @@ def text_tool_calls(content: str, allowed: list[str], turn: int) -> list[dict[st
             return []
         name = it.get("name") or (it.get("function") or {}).get("name")
         args = it.get("parameters", it.get("arguments", it.get("input", {})))
-        if name not in allowed or not isinstance(args, (dict, str)):
+        if name not in allowed or not isinstance(args, dict | str):
             return []
         calls.append({"id": f"text-{turn}-{i}", "function": {"name": name, "arguments":
                                                               args if isinstance(args, str) else json.dumps(args)}})
