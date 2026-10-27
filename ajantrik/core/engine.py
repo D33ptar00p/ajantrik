@@ -31,7 +31,7 @@ from typing import Any
 
 from . import delivery as deliv
 from . import gate as gate_mod
-from . import jobs
+from . import jobs, sandbox
 from .connections import tickets as tix
 from .graph import DELIVER, groups, role_of, run_order, successor
 from .routing import added_lines, changed_paths, refused, route_reviewers
@@ -211,7 +211,16 @@ class Engine:
             else:
                 env = {**os.environ, "WORKTREE": str(wt), "REPO": str(self.root),
                        "FACTORY_DIR": str(self.root / ".factory")}
-                r = subprocess.run(["bash", "-c", step["cmd"]], cwd=wt, capture_output=True, text=True, env=env)
+                # Setup installs dependencies, whose install scripts are code too: it runs in the sandbox.
+                sb = self.cfg.get("sandbox") or {}
+                jd = jobs.job_dir(self.root, wt.name)
+                try:
+                    argv = sandbox.wrap(["bash", "-c", step["cmd"]], sb if (sb.get("apply") or {}).get("gate", True)
+                                        else None, sandbox.settings_path(self.root, f"setup-{wt.name}"),
+                                        sandbox.writable_for(wt, jd))
+                except sandbox.SandboxUnavailable as e:
+                    raise FactoryError(f"worktree setup `{step['cmd']}`: {e}") from None
+                r = subprocess.run(argv, cwd=wt, capture_output=True, text=True, env=env)
                 if r.returncode != 0:
                     raise FactoryError(f"worktree setup `{step['cmd']}` failed: {r.stderr.strip()[-300:]}")
 

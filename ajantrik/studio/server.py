@@ -361,8 +361,8 @@ class Studio:
 
     def doctor(self, body: dict[str, Any]) -> dict[str, Any]:
         only = body.get("only")
-        if only is not None and only not in ("git", "tickets", "runtime"):
-            raise ApiError(400, "only must be git, tickets or runtime")
+        if only is not None and only not in ("git", "tickets", "runtime", "sandbox"):
+            raise ApiError(400, "only must be git, tickets, runtime or sandbox")
         return _cli(self.root, ["doctor", *(["--only", only] if only else []), "--json"], timeout=120)
 
     def new_job(self, body: dict[str, Any]) -> dict[str, Any]:

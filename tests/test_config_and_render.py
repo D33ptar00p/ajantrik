@@ -178,9 +178,9 @@ def test_credentials_must_be_references():
         cfg(connections={"tickets": {"provider": "jira", "token_ref": "ATATT3xFfGF0abc"}})
     with pytest.raises(ValidationError, match="never the value"):
         cfg(runtime={"api": {"api_key_ref": "sk-ant-xyz"}})
-    c = cfg(connections={"tickets": {"provider": "jira", "project": "GEN", "token_ref": "env:JIRA_TOKEN",
+    c = cfg(connections={"tickets": {"provider": "jira", "project": "PROJ", "token_ref": "env:JIRA_TOKEN",
                                      "site": "https://x.atlassian.net"}})
-    assert c.connections.tickets.jql and "project = GEN" in c.connections.tickets.jql
+    assert c.connections.tickets.jql and "project = PROJ" in c.connections.tickets.jql
     assert c.connections.tickets.browse_url == "https://x.atlassian.net/browse/"
 
 
@@ -211,7 +211,7 @@ def test_minimal_loop_without_gate_or_reviewers():
 
 # ---- routing ------------------------------------------------------------------------------------------
 def test_glob_semantics():
-    assert glob_match("mocap_desktop_gui/mc_calib_view.py", "mc_calib*")
+    assert glob_match("desktop_gui/app_calib_view.py", "app_calib*")
     assert glob_match("pyside_rc/qml/Main.qml", "pyside_rc/qml/")
     assert glob_match("a/b/pyside_rc/qml/x.qml", "pyside_rc/qml/")
     assert glob_match("src/pages/billing/Plan.tsx", "src/**/billing/*")
@@ -234,15 +234,15 @@ def routed(*reviewers: dict, **kw) -> dict:
 
 def test_routing_by_paths_diff_patterns_and_scoped_patterns():
     qml = {"path_globs": ["pyside_rc/qml/", "*.qrc"],
-           "scoped_patterns": [{"paths": ["mocap_desktop_gui/"], "pattern": r"@Property|Signal\(|@Slot"}]}
-    c = routed({"id": "calib", "path_globs": ["mc_calib*", "mc/settings/"]},
+           "scoped_patterns": [{"paths": ["desktop_gui/"], "pattern": r"@Property|Signal\(|@Slot"}]}
+    c = routed({"id": "calib", "path_globs": ["app_calib*", "app/settings/"]},
                {"id": "xplat", "path_globs": ["main.py"], "diff_patterns": ["subprocess", r"sys\.platform"]},
                {"id": "ui", **qml}, {"id": "ux", **qml})
-    r = route_reviewers(c, ["mocap_desktop_gui/mc_calib_panel.py"], {})
+    r = route_reviewers(c, ["desktop_gui/app_calib_panel.py"], {})
     assert r["calib"] and not r["xplat"] and r["code"] == "always"
-    r = route_reviewers(c, ["mocap_desktop_gui/widgets.py"], {"mocap_desktop_gui/widgets.py": ["  subprocess.run(x)"]})
+    r = route_reviewers(c, ["desktop_gui/widgets.py"], {"desktop_gui/widgets.py": ["  subprocess.run(x)"]})
     assert r["xplat"] and not r["calib"]
-    r = route_reviewers(c, ["mocap_desktop_gui/model.py"], {"mocap_desktop_gui/model.py": ["    @Property(int)"]})
+    r = route_reviewers(c, ["desktop_gui/model.py"], {"desktop_gui/model.py": ["    @Property(int)"]})
     assert r["ui"] and r["ux"]
     r = route_reviewers(c, ["pyside_rc/qml/Panel.qml"], {})
     assert r["ui"] and r["ux"] and not r["calib"]
@@ -346,9 +346,9 @@ def test_removed_agents_are_cleaned_up_unless_edited(git_repo, factory):
 
 def test_skill_md_follows_the_loop(git_repo, factory):
     factory(connections__tickets={"provider": "jira", "mode": "mcp", "site": "https://m.atlassian.net",
-                                  "project": "GEN"}, delivery__mode="pr")
+                                  "project": "PROJ"}, delivery__mode="pr")
     text = (git_repo / ".claude" / "skills" / "factory" / "SKILL.md").read_text()
-    assert "getJiraIssue" in text and "GEN-123" in text and "/factory sync" in text
+    assert "getJiraIssue" in text and "PROJ-123" in text and "/factory sync" in text
     assert "factory.py deliver" in text and "Never push, never merge" not in text
     factory()
     text = (git_repo / ".claude" / "skills" / "factory" / "SKILL.md").read_text()
@@ -374,12 +374,12 @@ def test_guard_hooks_in_a_rendered_repo(git_repo, factory):
 
 # ---- tickets ---------------------------------------------------------------------------------------------
 class FakeJira:
-    issues: ClassVar[dict[str, dict]] = {"GEN-1": {"key": "GEN-1", "summary": "Add rename", "type": "Story", "status": "To Do",
-                        "status_category": "To Do", "labels": ["factory"], "epic": "GEN-100"},
-              "GEN-2": {"key": "GEN-2", "summary": "Fix crash", "type": "Bug", "status": "To Do",
+    issues: ClassVar[dict[str, dict]] = {"PROJ-1": {"key": "PROJ-1", "summary": "Add rename", "type": "Story", "status": "To Do",
+                        "status_category": "To Do", "labels": ["factory"], "epic": "PROJ-100"},
+              "PROJ-2": {"key": "PROJ-2", "summary": "Fix crash", "type": "Bug", "status": "To Do",
                         "status_category": "To Do", "labels": ["factory"], "epic": None},
-              "GEN-3": {"key": "GEN-3", "summary": "Export", "type": "Story", "status": "To Do",
-                        "status_category": "To Do", "labels": ["factory"], "epic": "GEN-200"}}
+              "PROJ-3": {"key": "PROJ-3", "summary": "Export", "type": "Story", "status": "To Do",
+                        "status_category": "To Do", "labels": ["factory"], "epic": "PROJ-200"}}
 
     def __init__(self, conn):
         pass
@@ -393,28 +393,28 @@ class FakeJira:
 
 def test_sync_and_next(git_repo, factory, monkeypatch):
     monkeypatch.setattr(tix, "Jira", FakeJira)
-    sh("git", "push", "-q", "origin", "main:feature/GEN-100_Projects", cwd=git_repo)
+    sh("git", "push", "-q", "origin", "main:feature/PROJ-100_Projects", cwd=git_repo)
     factory(connections__tickets={"provider": "jira", "mode": "rest", "site": "https://m.atlassian.net",
-                                      "project": "GEN"})
+                                      "project": "PROJ"})
     from ajantrik.core.engine import load_config
 
     c = load_config(git_repo)
     report = tix.sync(git_repo, c, [])
-    assert report == ["GEN-1: added (base feature/GEN-100_Projects)", "GEN-2: added (base main)",
-                      "GEN-3: blocked (epic GEN-200 has no branch on origin)"]
-    assert tix.sync(git_repo, c, [])[0].startswith("GEN-1: skipped")
-    FakeJira.issues["GEN-1"] = {**FakeJira.issues["GEN-1"], "status_category": "Done", "status": "Done"}
+    assert report == ["PROJ-1: added (base feature/PROJ-100_Projects)", "PROJ-2: added (base main)",
+                      "PROJ-3: blocked (epic PROJ-200 has no branch on origin)"]
+    assert tix.sync(git_repo, c, [])[0].startswith("PROJ-1: skipped")
+    FakeJira.issues["PROJ-1"] = {**FakeJira.issues["PROJ-1"], "status_category": "Done", "status": "Done"}
     item = tix.claim_next(git_repo, c)
-    assert item and item["key"] == "GEN-2" and item["base"] == "main"
+    assert item and item["key"] == "PROJ-2" and item["base"] == "main"
     text = (git_repo / ".factory" / "backlog.md").read_text()
-    assert "- [x] GEN-1 · base: feature/GEN-100_Projects · Add rename → Done" in text
-    assert "- [x] GEN-2 · base: main · Fix crash → claimed" in text
+    assert "- [x] PROJ-1 · base: feature/PROJ-100_Projects · Add rename → Done" in text
+    assert "- [x] PROJ-2 · base: main · Fix crash → claimed" in text
     from ajantrik.core.engine import Engine
 
     job = Engine(git_repo).new_job(item["text"], item["key"], item["base"])
     tix.mark_claimed(git_repo, item["line"], job["id"])
     assert f"→ {job['id']}" in (git_repo / ".factory" / "backlog.md").read_text()
-    assert job["branch"] == "bugfix/GEN-2_Fix_crash" and job["ticket"] == "GEN-2"
+    assert job["branch"] == "bugfix/PROJ-2_Fix_crash" and job["ticket"] == "PROJ-2"
 
 
 def _three_item_backlog(root: Path, *lines: str) -> Path:
@@ -456,10 +456,10 @@ def test_next_items_uses_the_single_key_and_base_of_the_items(git_repo, factory)
     from ajantrik.core.engine import Engine
 
     factory()
-    _three_item_backlog(git_repo, "- [ ] GEN-4 · base: main · a", "- [ ] b", "- [ ] GEN-4 · c")
+    _three_item_backlog(git_repo, "- [ ] PROJ-4 · base: main · a", "- [ ] b", "- [ ] PROJ-4 · c")
     claim = tix.claim_items(git_repo, [0, 2])
     job = Engine(git_repo).new_job(claim["request"], claim["key"], claim["base"])
-    assert job["ticket"] == "GEN-4" and job["base"] == "main" and job["request"] == "a; c"
+    assert job["ticket"] == "PROJ-4" and job["base"] == "main" and job["request"] == "a; c"
 
 
 def test_next_items_cli_flag_rejects_non_numbers():

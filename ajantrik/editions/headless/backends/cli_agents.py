@@ -6,7 +6,10 @@ be resumed with the next round's findings instead of re-reading the whole repo.
 Claude Code runs in the main checkout, so the repo's .claude/settings.json hooks (the factory
 guard) vet every tool call, with FACTORY_GUARD=strict forcing the factory tier. Codex has no tool
 hooks: its sandbox is the boundary (workspace-write: the worktree and the job folder only, no
-network), which `factory validate` points out.
+network), which `factory validate` points out. With the factory's sandbox on (sandbox.apply.codex),
+the whole codex process also runs inside srt, with the OpenAI hosts allowed so it can reach its model.
+On Linux Codex's own sandbox (Landlock, seccomp) stacks inside it. On macOS a Seatbelt profile cannot
+be applied inside another, so there srt is the boundary and Codex runs with danger-full-access.
 """
 
 from __future__ import annotations
@@ -17,8 +20,13 @@ import os
 import shutil
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
+
+from ajantrik.core import sandbox as sbx
 
 from .base import AgentResult, AgentRun, agent_env
+
+CODEX_HOSTS = ["api.openai.com", "chatgpt.com", "*.chatgpt.com", "auth.openai.com"]
 
 
 async def _stream(argv: list[str], cwd: Path, env: dict[str, str], log_path: Path | None, timeout: float,
@@ -103,10 +111,18 @@ class CodexCliBackend:
     name = "codex-cli"
     supports_resume = True
 
-    def __init__(self, binary: str = "codex", sandbox: str = "workspace-write", extra_args: list[str] | None = None):
+    def __init__(self, binary: str = "codex", sandbox: str = "workspace-write", extra_args: list[str] | None = None,
+                 os_sandbox: dict[str, Any] | None = None):
         self.binary = binary
-        self.sandbox = sandbox
+        self.os_sandbox = os_sandbox if sbx.enabled(os_sandbox) else None
+        # Seatbelt does not nest: inside srt on macOS, srt is the boundary.
+        self.sandbox = "danger-full-access" if self.os_sandbox and sbx.platform() == "darwin" else sandbox
         self.extra_args = extra_args or []
+
+    def hosts(self) -> list[str]:
+        base = os.environ.get("OPENAI_BASE_URL", "")
+        host = urlparse(base).hostname if base else None
+        return [*CODEX_HOSTS, *([host] if host else [])]
 
     def argv(self, run: AgentRun) -> list[str]:
         # Codex has no system-prompt flag: the agent's instructions lead the first message. A resumed
@@ -127,7 +143,14 @@ class CodexCliBackend:
             return AgentResult(False, error=f"{self.binary} not found on PATH")
         env = agent_env(dict(os.environ), keep={"OPENAI_API_KEY", "CODEX_HOME", "OPENAI_BASE_URL"})
         env["FACTORY_GUARD"] = "strict"
-        rc, events, stderr = await _stream(self.argv(run), run.worktree, env, run.log_path, run.timeout_s,
+        try:
+            # codex keeps its sessions and login in CODEX_HOME (~/.codex): it must be able to write there.
+            home = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
+            argv = sbx.wrap(self.argv(run), self.os_sandbox, sbx.settings_path(run.root, f"{run.job_dir.name}-{run.name}"),
+                            [*sbx.writable_for(run.worktree, run.job_dir), home], self.hosts())
+        except sbx.SandboxUnavailable as err:
+            return AgentResult(False, error=str(err))
+        rc, events, stderr = await _stream(argv, run.worktree, env, run.log_path, run.timeout_s,
                                            stdin=self.stdin(run))
         session = None
         text = ""

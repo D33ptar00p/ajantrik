@@ -99,7 +99,7 @@ def underscore_words(text: str, words: int = 8) -> str:
 
 def glob_match(path: str, pattern: str) -> bool:
     """Factory globs: `dir/` is a directory prefix, a pattern with / matches the full path, a bare
-    pattern matches the file name (mc_calib*) or the full path."""
+    pattern matches the file name (app_calib*) or the full path."""
     path = path.replace("\\", "/")
     if pattern.endswith("/"):
         return path.startswith(pattern) or f"/{pattern}" in f"/{path}"

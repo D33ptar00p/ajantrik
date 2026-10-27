@@ -147,6 +147,17 @@ connections:
   tickets:
     provider: none
     write_back: none
+# Feature development and testing run inside Anthropic's sandbox-runtime (`srt`): agents' commands,
+# worktree setup and gate steps write only the job's worktree, its job folder and the temp dir, and
+# reach only the allowed hosts. Every option: studio → Sandbox, or ajantrik/kit/schema.py `Sandbox`.
+sandbox:
+  enabled: true
+  fail_if_unavailable: true
+  network:
+    allowed_domains:
+    - pypi.org
+    - files.pythonhosted.org
+    - registry.npmjs.org
 delivery:
   mode: none
   require_approval: true

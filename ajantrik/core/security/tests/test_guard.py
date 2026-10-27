@@ -25,17 +25,17 @@ class GuardTest(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
         base = Path(cls.tmp.name)
-        cls.repo = base / "accounts-portal"
-        cls.wt = base / "accounts-portal-factory" / "001-IST-1-thing"
+        cls.repo = base / "web-app"
+        cls.wt = base / "web-app-factory" / "001-PROJ-1-thing"
         (cls.repo / ".claude" / "agents").mkdir(parents=True)
         (cls.repo / ".claude" / "agents" / "builder-ui.md").write_text("---\nname: builder-ui\n---\n")
-        (cls.repo / ".factory" / "jobs" / "001-IST-1-thing").mkdir(parents=True)
+        (cls.repo / ".factory" / "jobs" / "001-PROJ-1-thing").mkdir(parents=True)
         (cls.repo / ".env").write_text(f"VITE_API_URL=https://api.example.test\nVITE_E2E_PASSWORD={ENV_PASSWORD}\n")
         cls.wt.mkdir(parents=True)
         (cls.wt / ".env").symlink_to(cls.repo / ".env")
-        cls.job = cls.repo / ".factory" / "jobs" / "001-IST-1-thing"
+        cls.job = cls.repo / ".factory" / "jobs" / "001-PROJ-1-thing"
         (cls.repo / ".factory" / "factory.json").write_text(json.dumps({
-            "repo": {"name": "accounts-portal", "worktree_root": "../{repo}-factory"},
+            "repo": {"name": "web-app", "worktree_root": "../{repo}-factory"},
             "security": {"guard": {"env_reader_scripts": "gate.sh, with-app.sh, Cypress",
                                    "local_url_example": "http://localhost:5173/",
                                    "external_services": "Jira, Notion and Figma"}}}))
@@ -127,7 +127,7 @@ class GuardTest(unittest.TestCase):
                     f"cd {self.wt} && flock {self.wt}/.git/lock git push"):
             with self.subTest(cmd=cmd):
                 self.assertBlocked(self.bash(cmd))
-        for cmd in (f"cd {self.wt} && git commit -m 'feat: IST-1 - x'", f"git -C {self.wt} diff develop...HEAD",
+        for cmd in (f"cd {self.wt} && git commit -m 'feat: PROJ-1 - x'", f"git -C {self.wt} diff develop...HEAD",
                     f"git worktree add {self.wt}2 -b feature/y develop", "git fetch origin --prune",
                     f"cd {self.wt} && git reset --hard HEAD"):
             with self.subTest(cmd=cmd):
@@ -233,7 +233,7 @@ class GuardTest(unittest.TestCase):
                 self.assertNotIn(text.split()[-1].strip('"'), out["reason"])
 
     def test_prompt_clean_passes(self):
-        self.assertIsNone(self.prompt("/factory IST-123 --base develop"))
+        self.assertIsNone(self.prompt("/factory PROJ-123 --base develop"))
         self.assertIsNone(self.prompt("the password is in .env as VITE_E2E_PASSWORD"))
 
     # ---- untrusted -----------------------------------------------------------------------------------
@@ -260,12 +260,12 @@ class GuardTest(unittest.TestCase):
 
     # ---- approvals and delivery ------------------------------------------------------------------
     def test_agents_never_approve_or_deliver(self):
-        for cmd in ("python3 .factory/factory.py approve 001-IST-1-thing", "factory approve 001",
-                    ".factory/factory.py deliver 001", "factory deliver 001-IST-1-thing",
+        for cmd in ("python3 .factory/factory.py approve 001-PROJ-1-thing", "factory approve 001",
+                    ".factory/factory.py deliver 001", "factory deliver 001-PROJ-1-thing",
                     "factory --json deliver 001"):
             with self.subTest(cmd=cmd):
                 self.assertBlocked(self.bash(cmd), "agents never approve")
-        self.assertAllowed(self.bash("python3 .factory/factory.py step 001-IST-1-thing"))
+        self.assertAllowed(self.bash("python3 .factory/factory.py step 001-PROJ-1-thing"))
 
     def test_agents_never_push_the_backlog_to_jira(self):
         for cmd in ("python3 .factory/factory.py sync --push", "factory sync --push", "factory --json sync --push"):
@@ -292,10 +292,10 @@ class GuardTest(unittest.TestCase):
         sid = "orch-approve"
         arm = {"tool_name": "Bash", "tool_input": {"command": ".factory/security/guard.py arm"}, "session_id": sid}
         self.assertAllowed(self.run_hook("bash", arm, factory=False))
-        approve = {"tool_name": "Bash", "tool_input": {"command": "python3 .factory/factory.py approve 001-IST-1-thing"},
+        approve = {"tool_name": "Bash", "tool_input": {"command": "python3 .factory/factory.py approve 001-PROJ-1-thing"},
                    "session_id": sid}
         self.assertBlocked(self.run_hook("bash", approve, factory=False), "last prompt")
-        r = self.run_hook("prompt", {"prompt": "/factory go 001-IST-1-thing", "session_id": sid}, factory=False)
+        r = self.run_hook("prompt", {"prompt": "/factory go 001-PROJ-1-thing", "session_id": sid}, factory=False)
         self.assertAllowed(r)
         self.assertAllowed(self.run_hook("bash", approve, factory=False))
         other = {**approve, "tool_input": {"command": "python3 .factory/factory.py approve 002-other"}}
