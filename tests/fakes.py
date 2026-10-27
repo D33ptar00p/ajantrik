@@ -24,11 +24,13 @@ def commit(wt: Path, msg: str) -> None:
 @dataclass
 class FakeBackend:
     """verdicts: reviewer id -> list of verdicts per round (last one repeats).
-    build: called as build(worktree, round) by builders to change code."""
+    build: called as build(worktree, round) by builders to change code.
+    blocked_spec: the spec-writer asks questions (BLOCKED) until its prompt carries a rework note."""
 
     verdicts: dict[str, list[str]] = field(default_factory=dict)
     build: Callable[[Path, int], None] | None = None
     blocked_builder: bool = False
+    blocked_spec: bool = False
     calls: list[AgentRun] = field(default_factory=list)
     name: str = "fake"
     supports_resume: bool = True
@@ -38,7 +40,9 @@ class FakeBackend:
         jd, wt = run.job_dir, run.worktree
         rnd = int(m.group(1)) if (m := re.search(r"Round: (\d+)\.", run.prompt)) else 0
         a = run.agent
-        if a == "spec-writer":
+        if a == "spec-writer" and self.blocked_spec and "Rework:" not in run.prompt:
+            (jd / "spec.md").write_text("BLOCKED\n\n## Questions a human must answer\n\n1. Integers or floats?\n")
+        elif a == "spec-writer":
             (jd / "spec.md").write_text("# Spec\n\nAdd a multiply function.\n")
         elif a == "architect":
             (jd / "design.md").write_text("# Design\n\nBuilders: main\n")

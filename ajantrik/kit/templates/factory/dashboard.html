@@ -179,6 +179,14 @@
   .copy:hover { color: var(--text); border-color: var(--muted); }
   .copy:focus-visible { outline: 2px solid var(--active); outline-offset: 1px; }
   .copy.done { color: var(--pass); border-color: var(--pass); }
+  #note-dlg { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+    width: min(560px, calc(100vw - 32px)); padding: 16px; }
+  #note-dlg::backdrop { background: rgb(0 0 0 / 40%); }
+  #note-dlg h3 { margin: 0 0 6px; font-size: 15px; }
+  #note-dlg p { margin: 0 0 10px; color: var(--muted); font-size: 12px; }
+  #note-dlg textarea { width: 100%; box-sizing: border-box; min-height: 160px; font: inherit; font-size: 13px;
+    background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
+  #note-dlg .row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
 
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
   @keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: .4; } }
@@ -314,6 +322,13 @@
 <details class="backlog" id="backlog"><summary id="backlog-sum">Backlog</summary><ul id="backlog-list"></ul></details>
 <div class="board-wrap"><main class="board" id="board"></main></div>
 <footer id="footer"></footer>
+<dialog id="note-dlg" aria-labelledby="note-h"><form method="dialog">
+  <h3 id="note-h"></h3>
+  <p id="note-p"></p>
+  <textarea id="note-text" aria-labelledby="note-h"></textarea>
+  <div class="row"><button class="copy" value="cancel">cancel</button>
+    <button class="copy act primary" id="note-copy" value="copy">⧉ copy command</button></div>
+</form></dialog>
 
 <div id="overlay">
   <div class="scrim" data-close></div>
@@ -620,6 +635,12 @@ function cmd(label, text, primary = false) {
     aria-label="Copy: ${esc(text)}">⧉ ${esc(label)}</button>`
 }
 
+// A command that needs a note (rework): the button asks for the note, then copies the command with it filled in.
+function noteCmd(label, prefix, primary = false) {
+  return `<button class="copy act ${primary ? 'primary' : ''}" data-note-cmd="${esc(prefix)}" data-label="${esc(label)}"
+    title="${esc(prefix)} '<note>'" aria-label="Write a note, then copy: ${esc(prefix)}">✎ ${esc(label)}</button>`
+}
+
 // An action button the studio carries out: the board never holds the token, it only posts a message to its parent.
 function act(label, job, action, stage = '', primary = false) {
   const text = `${action} ${job}`
@@ -661,12 +682,15 @@ function actions(job) {
     return [cmd('deliver', `${CLI} deliver ${id}`, true)]
   }
   if (awaiting) {
-    if (live) return [act('go', id, 'go', '', true), cmd('rework', `factory rework ${id} "<note>"`)]
+    if (live) return [act('go', id, 'go', '', true), act('rework', id, 'rework')]
     return HEADLESS
-      ? [cmd('go', `factory go ${id}`, true), cmd('approve', `factory approve ${id} --stage ${awaiting}`), cmd('rework', `factory rework ${id} "<note>"`)]
-      : [cmd('go', `/factory go ${id}`, true), cmd('rework', `/factory rework ${id} "<note>"`)]
+      ? [cmd('go', `factory go ${id}`, true), cmd('approve', `factory approve ${id} --stage ${awaiting}`), noteCmd('rework', `factory rework ${id}`)]
+      : [cmd('go', `/factory go ${id}`, true), noteCmd('rework', `/factory rework ${id}`)]
   }
-  if (st === 'needs-human') return [cmd('rework', `${CLI} rework ${id} "<note>"`, true)]
+  if (st === 'needs-human') {
+    const label = /BLOCKED/i.test(job.note || '') ? 'answer' : 'rework'
+    return [live ? act(label, id, 'rework', '', true) : noteCmd(label, `${CLI} rework ${id}`, true)]
+  }
   if (st === 'ready') {
     return CFG.delivery.mode === 'none' ? readyCommands(job) : [cmd('deliver', `${CLI} deliver ${id}`, true)]
   }
@@ -1007,6 +1031,26 @@ async function copy(btn, text = btn.dataset.copy) {
   setTimeout(() => { btn.textContent = label; btn.classList.remove('done') }, 1500)
 }
 
+// Single quotes keep the note one shell word whatever it holds; a ' inside becomes '\''.
+const shellQuote = (s) => `'${s.replace(/'/g, `'\\''`)}'`
+
+function askNote(btn) {
+  const dlg = $('note-dlg')
+  const prefix = btn.dataset.noteCmd
+  const answer = btn.dataset.label === 'answer'
+  $('note-h').textContent = `${answer ? 'Answer' : 'Rework'}: ${prefix.split(' ').pop()}`
+  $('note-p').textContent = answer
+    ? 'Answer the questions in spec.md (or design.md), numbered as there. Copy the command and run it in the repo; then run factory go on the job.'
+    : 'What should change? Copy the command and run it in the repo; then run factory go on the job.'
+  $('note-text').value = ''
+  dlg.onclose = () => {
+    const note = $('note-text').value.trim()
+    if (dlg.returnValue === 'copy' && note) copy(btn, `${prefix} ${shellQuote(note)}`)
+  }
+  dlg.showModal()
+  $('note-text').focus()
+}
+
 document.addEventListener('click', (e) => {
   const actBtn = e.target.closest('[data-act]')
   if (actBtn) {
@@ -1021,6 +1065,8 @@ document.addEventListener('click', (e) => {
     window.parent.postMessage({ type: 'factory-board-action', job, action, stage }, location.origin)
     return
   }
+  const noteBtn = e.target.closest('[data-note-cmd]')
+  if (noteBtn) { e.stopPropagation(); return askNote(noteBtn) }
   const copyBtn = e.target.closest('[data-copy]')
   if (copyBtn) { e.stopPropagation(); return copy(copyBtn) }
   const docCopy = e.target.closest('[data-copy-doc]')

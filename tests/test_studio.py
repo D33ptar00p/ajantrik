@@ -659,6 +659,54 @@ def test_an_approved_delivery_goes_straight_on_to_deliver(studio, spawned, monke
     assert status == 200 and "delivering" not in r and spawned == [["deliver", "005-readme"]]
 
 
+def test_rework_records_the_note_then_runs_the_job_on(studio, spawned, monkeypatch):
+    port, token, repo = studio
+    seen: list[list[str]] = []
+    monkeypatch.setattr(studio_server, "_cli", lambda root, args, env=None, timeout=0: (
+        seen.append(args) or {"ok": True, "data": {"id": "005-readme", "stage": "spec"}}))
+    _job_at(repo, "needs-human")
+    note = "- 1. the job 001 page\n- --scope is not a flag here"
+    status, r, _ = call(port, "POST", "/api/jobs/005-readme/rework", token=token, body={"note": note})
+    assert status == 200 and r["running"]["started"] is True
+    assert seen == [["rework", "005-readme", "--json", "--", note]]
+    assert spawned == [["go", "005-readme"]]
+    call(port, "POST", "/api/jobs/005-readme/rework", token=token, body={"note": "x", "scope": True})
+    assert seen[-1] == ["rework", "005-readme", "--json", "--scope", "--", "x"]
+
+
+@pytest.mark.parametrize("body", [{}, {"note": "  "}, {"note": 3}, {"note": "--json"},
+                                  {"note": "x" * (studio_server.REWORK_NOTE_MAX + 1)}])
+def test_rework_refuses_a_bad_note(studio, spawned, body):
+    port, token, repo = studio
+    _job_at(repo, "needs-human")
+    assert call(port, "POST", "/api/jobs/005-readme/rework", token=token, body=body)[0] == 400
+    assert spawned == []
+
+
+def test_rework_needs_the_token_and_a_good_job_id(studio):
+    port, token, _ = studio
+    _, _, headers = call(port, "GET", f"/?token={token}")
+    jar = headers["Set-Cookie"].split(";")[0]
+    assert call(port, "POST", "/api/jobs/005-readme/rework", cookie=jar, body={"note": "x"})[0] == 403
+    assert call(port, "POST", "/api/jobs/..%2Fx/rework", token=token, body={"note": "x"})[0] in (400, 404)
+
+
+def test_the_board_asks_the_studio_for_a_rework_note(studio):
+    html = DASHBOARD.read_text()
+    assert "act(label, id, 'rework', '', true)" in html
+    assert "act('rework', id, 'rework')" in html
+    port, _, _ = studio
+    _, js, _ = call(port, "GET", "/app.js")
+    assert "rework: 'Rework'" in js and "openRework(" in js
+
+
+def test_the_standalone_board_asks_for_the_note_before_copying_rework():
+    html = DASHBOARD.read_text()
+    assert 'rework ${id} "<note>"' not in html  # no command with a placeholder left to fill in by hand
+    assert "noteCmd(label, `${CLI} rework ${id}`, true)" in html
+    assert '<dialog id="note-dlg"' in html and "shellQuote(note)" in html
+
+
 def test_the_board_offers_one_approve_and_deliver_and_a_deliver_column():
     html = DASHBOARD.read_text()
     assert "act('approve & deliver', id, 'deliver', '', true)" in html

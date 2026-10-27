@@ -179,6 +179,29 @@ def test_rework_before_approval_and_after_needs_human(factory, git_repo):
     assert last_builder.session_id is None and "rework-2.md" in last_builder.prompt
 
 
+def test_answers_to_a_blocked_spec_rerun_the_spec(factory, git_repo):
+    fake = FakeBackend(blocked_spec=True)
+    r = runner(factory(), fake)
+    job = r.run("Add a multiply function")
+    assert job["stage"] == "needs-human" and job["note"] == "spec.md: BLOCKED"
+    job = r.engine.rework(job["id"], "1. Integers only.")
+    assert job["stage"] == "spec" and job["rework"] == 1  # back to the spec, not on to a builder
+    assert (r.engine.dir(job) / "rework-1.md").read_text() == "1. Integers only.\n"
+    job = r.resume(job["id"])
+    assert job["stage"] == "awaiting-approval"
+    assert "Rework: read rework-1.md" in [c for c in fake.calls if c.agent == "spec-writer"][-1].prompt
+    assert not [c for c in fake.calls if c.agent.startswith("builder")]
+
+
+def test_a_blocked_builder_is_still_reworked_by_the_builder(factory, git_repo):
+    fake = FakeBackend(blocked_builder=True)
+    r = runner(factory(), fake)
+    job = r.go(r.run("Add a multiply function")["id"], by="tester")
+    assert job["stage"] == "needs-human"
+    fake.blocked_builder = False
+    assert r.engine.rework(job["id"], "add the dependency")["stage"] == "main"
+
+
 def test_vendored_cli_drives_a_job_without_the_package(factory, git_repo):
     factory()
     env = {"PATH": "/usr/bin:/bin", "HOME": str(git_repo), **{k: "t" for k in ("GIT_AUTHOR_NAME",

@@ -26,6 +26,9 @@ The job folder is in the main checkout; your one file goes there.
    Record every design or page URL you used; later stages need them.
 3. The code the feature touches, in the worktree. Find the real modules,
    functions, types, endpoints and tests; don't guess names.
+4. Any `rework-*.md` in the job folder, the latest last: a human's answers to
+   the questions of an earlier BLOCKED spec, or a change of scope. Where they
+   differ from the request, they win.
 
 ## Write spec.md
 

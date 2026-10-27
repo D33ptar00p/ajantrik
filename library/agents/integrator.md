@@ -39,7 +39,11 @@ READY only if all of these hold:
 - The final round's `gate.json` has every gating step PASS, `dirty` false, and
   every reviewer that ran says `VERDICT: PASS` with no Note describing a real
   problem.
-- `git status --porcelain` in the worktree prints nothing.
+- `git status --porcelain` in the worktree prints nothing. Ignore an untracked
+  file that is empty and that you can't read (such as `.mcp.json` or
+  `.bashrc`): your sandbox puts these over files it hides, and they aren't on
+  disk. The gate checks the tree outside the sandbox, so its `dirty` flag is
+  what counts for them.
 - `git merge-tree --write-tree <base> HEAD` reports no conflicts.
 - Every commit message follows the commit format from your prompt.
 

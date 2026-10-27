@@ -46,6 +46,7 @@ STAGE = re.compile(r"^[a-z][a-z0-9-]*$")
 COOKIE = "factory_studio"
 MAX_BODY = 2_000_000
 CLI_TIMEOUT = 600
+REWORK_NOTE_MAX = 20000
 EARLY_EXIT = 3.0  # seconds a detached command is watched for an immediate failure before "started" is reported
 
 
@@ -397,6 +398,25 @@ class Studio:
         if res.get("ok") and isinstance(res.get("data"), dict) and res["data"].get("stage") == DELIVER:
             return {**res, "delivering": self._detached(["deliver", job_id])}
         return res
+
+    def rework(self, job_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Send a job back with a note (answers to a BLOCKED spec or design, or what to change), then run it on."""
+        job_id = self._job(job_id)
+        note = body.get("note")
+        if not isinstance(note, str) or not note.strip():
+            raise ApiError(400, "give a note: the answers or what to change")
+        if len(note) > REWORK_NOTE_MAX:
+            raise ApiError(400, f"note is longer than {REWORK_NOTE_MAX} characters")
+        if note.strip() in ("--json", "--root"):  # the CLI would take these as its own flags
+            raise ApiError(400, "bad note")
+        args = ["rework", job_id, "--json", *(["--scope"] if body.get("scope") is True else []), "--", note]
+        res = _cli(self.root, args, timeout=60)
+        if not res.get("ok"):
+            return res
+        try:
+            return {**res, "running": self._detached(["go", job_id])}
+        except ApiError as e:  # the note is recorded either way; say why the job did not start
+            return {**res, "running": {"ok": False, "error": str(e), **e.extra}}
 
     def deliver(self, job_id: str) -> dict[str, Any]:
         """Deliver a job; one waiting for its delivery approval is approved first (the studio's
@@ -765,6 +785,8 @@ def make_handler(ws: Workspace, token: str, port: int) -> type[http.server.BaseH
                         return studio.deliver(rest[0])
                     if len(rest) == 2 and rest[1] == "go":
                         return studio.go(rest[0])
+                    if len(rest) == 2 and rest[1] == "rework":
+                        return studio.rework(rest[0], body)
             raise ApiError(404, f"no route {method} /api/{'/'.join(parts)}")
 
         def _delete_check(self) -> dict[str, Any]:
