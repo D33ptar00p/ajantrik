@@ -15,7 +15,22 @@
       "Read(~/.config/gh/**)",
       "Read(~/.npmrc)",
       "Read(~/.netrc)",
-      "Read(~/.git-credentials)"
+      "Read(~/.git-credentials)",
+      "Read(~/.ssh)",
+      "Read(~/.aws)",
+      "Read(~/.config/gh)",
+      "Read(~/.npmrc/**)",
+      "Read(~/.netrc/**)",
+      "Read(~/.git-credentials/**)",
+      "Edit(.env)",
+      "Edit(.env/**)",
+      "Edit(.env.*)",
+      "Edit(.factory/config)",
+      "Edit(.factory/config/**)",
+      "Edit(.claude)",
+      "Edit(.claude/**)",
+      "Edit(.github/workflows)",
+      "Edit(.github/workflows/**)"
     ]
   },
   "hooks": {
@@ -69,5 +84,48 @@
         ]
       }
     ]
+  },
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "autoAllowBashIfSandboxed": true,
+    "allowUnsandboxedCommands": false,
+    "excludedCommands": [
+      "python3 .factory/factory.py *"
+    ],
+    "network": {
+      "allowedDomains": [
+        "pypi.org",
+        "files.pythonhosted.org",
+        "registry.npmjs.org"
+      ],
+      "deniedDomains": [],
+      "allowLocalBinding": false
+    },
+    "filesystem": {
+      "denyRead": [
+        "~/.ssh",
+        "~/.aws",
+        "~/.config/gh",
+        "~/.npmrc",
+        "~/.netrc",
+        "~/.git-credentials"
+      ],
+      "allowRead": [],
+      "allowWrite": [
+        "/home/deep/Documents/Moveai/personal/ajantrik-factory",
+        "/home/deep/Documents/Moveai/personal/ajantrik/.factory/jobs"
+      ],
+      "denyWrite": [
+        ".env",
+        ".env.*",
+        ".factory/config/",
+        ".claude/",
+        ".github/workflows/"
+      ]
+    },
+    "enableWeakerNestedSandbox": false,
+    "enableWeakerNetworkIsolation": false,
+    "allowNestedUserNamespaces": false
   }
 }

@@ -487,6 +487,43 @@ function openNewJob() {
   req.focus()
 }
 
+// A blocked spec or design asks questions; the note answers them and that stage runs again. Anywhere else the
+// note is what to change (see Engine.rework). The job then runs on in the background.
+function openRework(job) {
+  const blocked = /BLOCKED/i.test(job.note || '')
+  const dlg = $('dlg-rework')
+  const note = h('textarea', { id: 'rw-note', rows: 10, required: true,
+    placeholder: blocked ? 'Answer each question, numbered as in the file.' : 'What should change?' })
+  const scope = h('input', { id: 'rw-scope', type: 'checkbox' })
+  const folder = `/p/${encodeURIComponent(S.pid)}/board/jobs/${encodeURIComponent(job.id)}/`
+  const submit = h('button', { type: 'submit', class: 'primary' }, blocked ? 'Send answers & run' : 'Rework & run')
+  const form = h('form', { method: 'dialog', class: 'dlg', onsubmit: async (e) => {
+    e.preventDefault()
+    if (!note.value.trim()) { note.focus(); return }
+    submit.disabled = true
+    try {
+      const r = await api('POST', `jobs/${job.id}/rework`, { note: note.value, scope: scope.checked })
+      if (r && r.error) toast(r.error, true)
+      else if (r && r.running && r.running.error) toast(`Note saved, but the job did not start: ${r.running.error}`, true)
+      else { toast(`Sent back: ${job.id} is running`); dlg.close() }
+    } catch (err) { toast(err.message, true) }
+    submit.disabled = false
+  } },
+  h('header', { class: 'dlg-head' }, h('h2', {}, blocked ? `Answer ${job.id}` : `Rework ${job.id}`),
+    h('button', { type: 'button', class: 'ghost icon', 'aria-label': 'Close', onclick: () => dlg.close() }, '×')),
+  h('p', { class: 'msg info' }, job.note || job.stage),
+  h('p', { class: 'help' }, blocked ? 'The questions are in the blocked file in the ' : 'Findings and outputs are in the ',
+    h('a', { href: folder, target: '_blank', rel: 'noopener' }, 'job folder'), '.'),
+  h('div', { class: 'field' }, h('label', { for: 'rw-note' }, blocked ? 'Answers' : 'Note'), note,
+    h('p', { class: 'help' }, 'Saved as rework-N.md in the job folder; the agents read it as instructions from you.')),
+  job.stage === 'needs-human' ? null : h('div', { class: 'field' },
+    h('label', {}, scope, ' The note changes scope: run the spec again too')),
+  h('div', { class: 'row end' }, h('button', { type: 'button', onclick: () => dlg.close() }, 'Cancel'), submit))
+  dlg.replaceChildren(form)
+  dlg.showModal()
+  note.focus()
+}
+
 function openWaiting() {
   renderJobs(lastJobs)
   $('dlg-waiting').showModal()
@@ -523,6 +560,9 @@ function renderJobs(jobs) {
       }
       if (isDelivery) btns.push(act('Approve & deliver', () => api('POST', `jobs/${j.id}/deliver`, {}), true))
       if (stage === 'ready' && val(['delivery', 'mode']) !== 'none') btns.push(act('Deliver', () => api('POST', `jobs/${j.id}/deliver`, {}), true))
+      const blocked = stage === 'needs-human' && /BLOCKED/i.test(j.note || '')
+      btns.push(h('button', { type: 'button', class: stage === 'needs-human' ? 'primary small' : 'small',
+        onclick: () => openRework(j) }, blocked ? 'Answer…' : 'Rework…'))
     }
     return h('tr', {}, h('td', {}, h('code', {}, j.id), h('div', { class: 'help' }, j.feature || '')),
       h('td', {}, stage), h('td', {}, j.note || ''), h('td', { class: 'acts' }, btns))
@@ -2462,13 +2502,18 @@ function route() {
 window.addEventListener('hashchange', route)
 
 // ---- Board actions: the board iframe has no token, so it asks this page to act for it -----------------------
-const BOARD_ACTIONS = { go: 'Go', approve: 'Approve', deliver: 'Deliver' }
+const BOARD_ACTIONS = { go: 'Go', approve: 'Approve', deliver: 'Deliver', rework: 'Rework' }
 window.addEventListener('message', async (event) => {
   if (!(event.origin === location.origin && event.source === $('board-frame').contentWindow)) return
   const { type, job, action, stage } = event.data || {}
   if (type !== 'factory-board-action' || typeof action !== 'string' || !Object.hasOwn(BOARD_ACTIONS, action)) return
   if (!S.pid || typeof job !== 'string' || !/^[0-9]{3}-[A-Za-z0-9_-]+$/.test(job)) return
   if (action === 'approve' && !(typeof stage === 'string' && /^[a-z][a-z0-9-]*$/.test(stage))) return
+  if (action === 'rework') {  // needs a note: the studio asks for it, the board only names the job
+    openRework(lastJobs.find((j) => j.id === job) || { id: job, stage: '', note: '' })
+    event.source.postMessage({ type: 'factory-board-result', job, action, ok: true }, location.origin)
+    return
+  }
   let ok = false
   try {
     const r = await api('POST', `jobs/${job}/${action}`, action === 'approve' ? { stage } : {})

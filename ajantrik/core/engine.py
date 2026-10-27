@@ -592,6 +592,11 @@ class Engine:
                 rerun = [s for s in before if role(s) == "plain"][-1:]
             job = self.save(job, rework=k)
             return self.enter(job, rerun[0]["id"]) if rerun else job
+        blocked = self.blocked_stage(job) if job["stage"] == "needs-human" else None
+        if blocked:
+            # A plan stage stopped with questions: the note answers them, and that stage runs again.
+            job = self.save(job, rework=k)
+            return self.enter(job, blocked["id"])
         if job["stage"] in ("needs-human", "ready") or (waiting and st and st["kind"] == "delivery"):
             builders = self.of_role("builder")
             if not builders:
@@ -601,6 +606,12 @@ class Engine:
             return self.enter(job, builders[0]["id"])
         raise FactoryError(f"rework applies to a job awaiting its first approval, ready or needing a human; "
                            f"{job['id']} is in {job['stage']}")
+
+    def blocked_stage(self, job: dict[str, Any]) -> dict[str, Any] | None:
+        """The first plan stage on the run path whose output starts with BLOCKED, if any."""
+        d = self.dir(job)
+        return next((s for s in self.path if role(s) == "plain" and s.get("output")
+                     and first_line(d / s["output"]).upper().startswith("BLOCKED")), None)
 
     def deliver(self, job_ref: str, by: str) -> dict[str, Any]:
         job = self.get(job_ref)
