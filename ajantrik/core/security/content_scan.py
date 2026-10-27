@@ -5,7 +5,7 @@
                     [--topics "name: word, phrase; name2: ..."] [--regex PATTERN]... [--path GLOB]...
 
 --topics  named lists of words or phrases, matched case-insensitively on word boundaries
-          ("competitors: vicon, optitrack; codenames: project falcon").
+          ("competitors: acme, globex; codenames: project falcon").
 --regex   Python regexes, matched case-sensitively; give one per flag, or one per line in a single
           value. Use (?i) for case-insensitive.
 --path    only scan added lines in files matching these globs (default: every file).

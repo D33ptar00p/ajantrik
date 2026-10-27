@@ -362,26 +362,26 @@ def test_backlog_crud_over_http(studio):
     assert status == 200 and r["items"] == [] and r["headless"] is False
 
     status, r, _ = call(port, "POST", "/api/backlog", token=token,
-                        body={"key": "GEN-9", "base": "main", "text": "Do it"})
+                        body={"key": "PROJ-9", "base": "main", "text": "Do it"})
     assert status == 200 and [i["text"] for i in r["items"]] == ["Do it"]
-    assert "- [ ] GEN-9 · base: main · Do it\n" in path.read_text()
+    assert "- [ ] PROJ-9 · base: main · Do it\n" in path.read_text()
 
     status, r, _ = call(port, "POST", "/api/backlog", token=token, body={"text": "Second"})
     assert status == 200 and len(r["items"]) == 2
 
     status, got, _ = call(port, "GET", "/api/backlog", token=token)
-    assert got["items"][0] == {"index": 0, "state": "queued", "key": "GEN-9", "base": "main", "text": "Do it",
-                               "line": "- [ ] GEN-9 · base: main · Do it"}
+    assert got["items"][0] == {"index": 0, "state": "queued", "key": "PROJ-9", "base": "main", "text": "Do it",
+                               "line": "- [ ] PROJ-9 · base: main · Do it"}
 
     status, r, _ = call(port, "PUT", "/api/backlog/0", token=token,
-                        body={"line": "- [ ] GEN-9 · base: main · Do it", "key": "GEN-9", "base": "main",
+                        body={"line": "- [ ] PROJ-9 · base: main · Do it", "key": "PROJ-9", "base": "main",
                               "text": "Do it better", "state": "blocked"})
     assert status == 200 and r["items"][0]["state"] == "blocked"
-    assert "- [!] GEN-9 · base: main · Do it better\n" in path.read_text()
+    assert "- [!] PROJ-9 · base: main · Do it better\n" in path.read_text()
     assert "- [ ] Second\n" in path.read_text()
 
     status, r, _ = call(port, "DELETE", "/api/backlog/0", token=token,
-                        body={"line": "- [!] GEN-9 · base: main · Do it better"})
+                        body={"line": "- [!] PROJ-9 · base: main · Do it better"})
     assert status == 200 and [i["text"] for i in r["items"]] == ["Second"]
     assert "Do it better" not in path.read_text() and "- [ ] Second\n" in path.read_text()
 
@@ -495,8 +495,8 @@ def test_backlog_run_starts_one_next_with_the_chosen_items(studio, spawned):
     ([{"index": 0, "line": "- [ ] one"}, {"index": 0, "line": "- [ ] one"}], 400),
     ([{"index": 3, "line": "- [x] done → 001-x"}], 400),
     ([{"index": 2, "line": "- [!] stuck"}], 400),
-    ([{"index": 0, "line": "- [ ] one"}, {"index": 4, "line": "- [ ] GEN-1 · a"},
-      {"index": 5, "line": "- [ ] GEN-2 · b"}], 400),
+    ([{"index": 0, "line": "- [ ] one"}, {"index": 4, "line": "- [ ] PROJ-1 · a"},
+      {"index": 5, "line": "- [ ] PROJ-2 · b"}], 400),
     ([{"index": 6, "line": "- [ ] base: a · x"}, {"index": 7, "line": "- [ ] base: b · y"}], 400),
     ([{"index": 0, "line": "- [ ] stale"}], 409),
     ([{"index": 99, "line": "- [ ] one"}], 409),
@@ -508,8 +508,8 @@ def test_backlog_run_starts_one_next_with_the_chosen_items(studio, spawned):
 def test_backlog_run_refuses_bad_selections(studio, spawned, items, expected):
     port, token, repo = studio
     _set_runtime(repo, "claude-cli")
-    _backlog(repo, "- [ ] one", "- [ ] two", "- [!] stuck", "- [x] done → 001-x", "- [ ] GEN-1 · a",
-             "- [ ] GEN-2 · b", "- [ ] base: a · x", "- [ ] base: b · y")
+    _backlog(repo, "- [ ] one", "- [ ] two", "- [!] stuck", "- [x] done → 001-x", "- [ ] PROJ-1 · a",
+             "- [ ] PROJ-2 · b", "- [ ] base: a · x", "- [ ] base: b · y")
     status, r, _ = call(port, "POST", "/api/backlog/run", token=token, body={"items": items})
     assert status == expected and r["error"]
     assert spawned == []
@@ -587,9 +587,9 @@ def _set_tickets(repo: Path, **tickets) -> None:
 def test_backlog_reports_the_jira_connection(studio):
     port, token, repo = studio
     assert call(port, "GET", "/api/backlog", token=token)[1]["jira"] == {"connected": False, "push": False, "project": None}
-    _set_tickets(repo, project="GEN")
-    assert call(port, "GET", "/api/backlog", token=token)[1]["jira"] == {"connected": True, "push": True, "project": "GEN"}
-    _set_tickets(repo, project="GEN", mode="mcp")
+    _set_tickets(repo, project="PROJ")
+    assert call(port, "GET", "/api/backlog", token=token)[1]["jira"] == {"connected": True, "push": True, "project": "PROJ"}
+    _set_tickets(repo, project="PROJ", mode="mcp")
     assert call(port, "GET", "/api/backlog", token=token)[1]["jira"]["push"] is False
 
 
@@ -599,24 +599,24 @@ def test_backlog_sync_needs_jira(studio):
     assert status == 409 and "not connected" in r["error"]
 
 
-@pytest.mark.parametrize(("tickets", "argv"), [({"project": "GEN"}, ["sync", "--push", "--json"]),
-                                               ({"project": "GEN", "mode": "mcp"}, ["sync", "--json"])])
+@pytest.mark.parametrize(("tickets", "argv"), [({"project": "PROJ"}, ["sync", "--push", "--json"]),
+                                               ({"project": "PROJ", "mode": "mcp"}, ["sync", "--json"])])
 def test_backlog_sync_runs_the_cli_and_returns_the_report(studio, monkeypatch, tickets, argv):
     port, token, repo = studio
     _set_tickets(repo, **tickets)
-    _backlog(repo, "- [ ] GEN-100 · one")
+    _backlog(repo, "- [ ] PROJ-100 · one")
     seen = []
     monkeypatch.setattr(studio_server, "_cli", lambda root, args, env=None, timeout=0:
-                        seen.append(args) or {"ok": True, "data": {"report": ["GEN-100: created from the backlog"]}})
+                        seen.append(args) or {"ok": True, "data": {"report": ["PROJ-100: created from the backlog"]}})
     status, r, _ = call(port, "POST", "/api/backlog/sync", token=token, body={})
     assert status == 200 and seen == [argv]
-    assert r["report"] == ["GEN-100: created from the backlog"]
-    assert [it["key"] for it in r["items"]] == ["GEN-100"]
+    assert r["report"] == ["PROJ-100: created from the backlog"]
+    assert [it["key"] for it in r["items"]] == ["PROJ-100"]
 
 
 def test_backlog_sync_reports_a_cli_failure(studio, monkeypatch):
     port, token, repo = studio
-    _set_tickets(repo, project="GEN")
+    _set_tickets(repo, project="PROJ")
     monkeypatch.setattr(studio_server, "_cli", lambda root, args, env=None, timeout=0:
                         {"ok": False, "error": "factory: secret in a backlog item: nothing was pushed to Jira"})
     status, r, _ = call(port, "POST", "/api/backlog/sync", token=token, body={})

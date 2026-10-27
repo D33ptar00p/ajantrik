@@ -11,9 +11,9 @@ from ajantrik.core.connections import tickets as tix
 from ajantrik.core.util import FactoryError
 
 QUEUED = "- [ ] Escape plant names in tooltips"
-TICKET = "- [ ] GEN-5 · base: feature/GEN-1_Proj · Add project rename"
-BLOCKED = "- [!] GEN-6 · epic GEN-9 has no branch on origin · Actor profile export"
-DONE = "- [x] GEN-1 · base: main · Old thing → 001-GEN-1-old-thing"
+TICKET = "- [ ] PROJ-5 · base: feature/PROJ-1_Proj · Add project rename"
+BLOCKED = "- [!] PROJ-6 · epic PROJ-9 has no branch on origin · User profile export"
+DONE = "- [x] PROJ-1 · base: main · Old thing → 001-PROJ-1-old-thing"
 
 
 def write(root: Path, *lines: str, header: bool = True) -> Path:
@@ -34,10 +34,10 @@ def test_list_parses_every_item_in_file_order(four):
     items = tix.list_items(four)
     assert [i["index"] for i in items] == [0, 1, 2, 3]
     assert [i["state"] for i in items] == ["queued", "queued", "blocked", "done"]
-    assert [i["key"] for i in items] == [None, "GEN-5", "GEN-6", "GEN-1"]
-    assert [i["base"] for i in items] == [None, "feature/GEN-1_Proj", None, "main"]
+    assert [i["key"] for i in items] == [None, "PROJ-5", "PROJ-6", "PROJ-1"]
+    assert [i["base"] for i in items] == [None, "feature/PROJ-1_Proj", None, "main"]
     assert [i["text"] for i in items] == ["Escape plant names in tooltips", "Add project rename",
-                                          "Actor profile export", "Old thing"]
+                                          "User profile export", "Old thing"]
     assert [i["line"] for i in items] == [QUEUED, TICKET, BLOCKED, DONE]
     assert len(items) == 4
 
@@ -62,10 +62,10 @@ def test_list_uses_the_given_key_pattern(tmp_path):
 def test_add_appends_one_line_and_leaves_earlier_bytes_alone(four):
     path = tix.backlog_path(four)
     before = path.read_bytes()
-    items = tix.add_item(four, "Do it", key="GEN-9", base="main")
+    items = tix.add_item(four, "Do it", key="PROJ-9", base="main")
     after = path.read_bytes()
-    assert after == before + "- [ ] GEN-9 · base: main · Do it\n".encode()
-    assert len(items) == 5 and items[-1]["line"] == "- [ ] GEN-9 · base: main · Do it"
+    assert after == before + "- [ ] PROJ-9 · base: main · Do it\n".encode()
+    assert len(items) == 5 and items[-1]["line"] == "- [ ] PROJ-9 · base: main · Do it"
     assert items[-1]["state"] == "queued" and items[-1]["index"] == 4
 
 
@@ -94,17 +94,17 @@ def test_add_to_a_file_without_a_trailing_newline_changes_no_other_byte(tmp_path
 def test_update_rewrites_only_that_line(four):
     path = tix.backlog_path(four)
     before = path.read_text().splitlines(keepends=True)
-    items = tix.update_item(four, 1, TICKET, text="New text", key="GEN-5", base="main", state="blocked")
+    items = tix.update_item(four, 1, TICKET, text="New text", key="PROJ-5", base="main", state="blocked")
     after = path.read_text().splitlines(keepends=True)
     changed = [i for i, (a, b) in enumerate(zip(before, after, strict=True)) if a != b]
     assert len(before) == len(after) and len(changed) == 1
-    assert after[changed[0]] == "- [!] GEN-5 · base: main · New text\n"
+    assert after[changed[0]] == "- [!] PROJ-5 · base: main · New text\n"
     assert items[1]["state"] == "blocked" and items[1]["text"] == "New text"
 
 
 def test_update_can_requeue_a_blocked_item_and_drops_its_reason(four):
-    tix.update_item(four, 2, BLOCKED, text="Actor profile export", key="GEN-6", base="main", state="queued")
-    assert "- [ ] GEN-6 · base: main · Actor profile export\n" in tix.backlog_path(four).read_text()
+    tix.update_item(four, 2, BLOCKED, text="User profile export", key="PROJ-6", base="main", state="queued")
+    assert "- [ ] PROJ-6 · base: main · User profile export\n" in tix.backlog_path(four).read_text()
     assert "no branch on origin" not in tix.backlog_path(four).read_text()
 
 
@@ -171,8 +171,8 @@ def test_conflict_is_a_factory_error():
 # ---- validation ---------------------------------------------------------------------------------------
 BAD = [
     {"text": ""}, {"text": "   "}, {"text": "two\nlines"}, {"text": "two\rlines"}, {"text": "a · b"},
-    {"text": "ok", "key": "bad key"}, {"text": "ok", "key": "gen-1"}, {"text": "ok", "key": "GEN-1 extra"},
-    {"text": "ok", "base": "a b"}, {"text": "ok", "base": "a\nb"}, {"text": "ok", "key": "GEN-1\n"},
+    {"text": "ok", "key": "bad key"}, {"text": "ok", "key": "proj-1"}, {"text": "ok", "key": "PROJ-1 extra"},
+    {"text": "ok", "base": "a b"}, {"text": "ok", "base": "a\nb"}, {"text": "ok", "key": "PROJ-1\n"},
     {"text": "ok", "base": "-v"}, {"text": "ok", "base": "--all"}, {"text": "ok", "base": "a..b"},
 ]
 
@@ -196,7 +196,7 @@ def test_bad_input_does_not_create_a_missing_file(tmp_path):
 
 def test_key_is_checked_against_the_configured_pattern(tmp_path):
     with pytest.raises(FactoryError):
-        tix.add_item(tmp_path, "x", key="GEN-1", key_pattern=r"ABC-\d+")
+        tix.add_item(tmp_path, "x", key="PROJ-1", key_pattern=r"ABC-\d+")
     tix.add_item(tmp_path, "x", key="ABC-1", key_pattern=r"ABC-\d+")
     assert tix.list_items(tmp_path, r"ABC-\d+")[0]["key"] == "ABC-1"
 
@@ -209,14 +209,14 @@ def test_empty_key_and_base_are_left_out(tmp_path):
 # ---- combine ------------------------------------------------------------------------------------------
 @pytest.fixture
 def mixed(tmp_path: Path) -> list[dict]:
-    write(tmp_path, "- [ ] GEN-1 · base: main · alpha", "- [ ] beta", "- [ ] GEN-1 · base: main · gamma",
-          "- [ ] GEN-2 · base: dev · delta", BLOCKED, DONE, "- [ ] base: dev · eps")
+    write(tmp_path, "- [ ] PROJ-1 · base: main · alpha", "- [ ] beta", "- [ ] PROJ-1 · base: main · gamma",
+          "- [ ] PROJ-2 · base: dev · delta", BLOCKED, DONE, "- [ ] base: dev · eps")
     return tix.list_items(tmp_path)
 
 
 def test_combine_joins_texts_in_index_order_with_the_single_key_and_base(mixed):
     r = tix.combine(mixed, [(2, mixed[2]["line"]), (0, mixed[0]["line"])])
-    assert r["request"] == "alpha; gamma" and r["key"] == "GEN-1" and r["base"] == "main"
+    assert r["request"] == "alpha; gamma" and r["key"] == "PROJ-1" and r["base"] == "main"
     assert [i["index"] for i in r["items"]] == [0, 2]
 
 
@@ -276,7 +276,7 @@ def test_claim_items_marks_only_the_chosen_lines(tmp_path):
 
 @pytest.mark.parametrize("indices", [[], [0, 0], [9], [0, 1], [0, 2], [3, 4]])
 def test_claim_items_rule_violation_leaves_the_file_unchanged(tmp_path, indices):
-    write(tmp_path, "- [ ] GEN-1 · one", "- [x] done → 001-x", "- [ ] GEN-2 · two", "- [ ] base: a · b",
+    write(tmp_path, "- [ ] PROJ-1 · one", "- [x] done → 001-x", "- [ ] PROJ-2 · two", "- [ ] base: a · b",
           "- [ ] base: c · d")
     path = tix.backlog_path(tmp_path)
     before = path.read_bytes()
@@ -286,7 +286,7 @@ def test_claim_items_rule_violation_leaves_the_file_unchanged(tmp_path, indices)
 
 
 def test_release_items_restores_the_original_lines_exactly(tmp_path):
-    write(tmp_path, "- [ ] GEN-1 · base: main · one", "- [ ] two", "- [ ] GEN-1 · three")
+    write(tmp_path, "- [ ] PROJ-1 · base: main · one", "- [ ] two", "- [ ] PROJ-1 · three")
     before = tix.backlog_path(tmp_path).read_bytes()
     r = tix.claim_items(tmp_path, [0, 2])
     assert tix.backlog_path(tmp_path).read_bytes() != before
@@ -296,7 +296,7 @@ def test_release_items_restores_the_original_lines_exactly(tmp_path):
 
 # ---- two-way sync with Jira -----------------------------------------------------------------------------
 JIRA_CFG = {"connections": {"tickets": {"provider": "jira", "mode": "rest", "site": "https://x.atlassian.net",
-                                        "project": "GEN", "label": "factory", "jql": "project = GEN",
+                                        "project": "PROJ", "label": "factory", "jql": "project = PROJ",
                                         "create_type": "Story"}},
             "repo": {"default_base": "main"}}
 
@@ -339,14 +339,14 @@ def jira(tmp_path, monkeypatch):
 
 
 def test_push_creates_issues_only_for_queued_items_without_a_ticket(tmp_path, jira):
-    write(tmp_path, "- [ ] base: dev · Escape names", TICKET, "- [!] blocked thing", DONE.replace("GEN-1 · ", ""))
+    write(tmp_path, "- [ ] base: dev · Escape names", TICKET, "- [!] blocked thing", DONE.replace("PROJ-1 · ", ""))
     report = tix.push_items(tmp_path, JIRA_CFG)
-    assert FakeJira.created == [("GEN", "Escape names", "Story", ["factory"])]
+    assert FakeJira.created == [("PROJ", "Escape names", "Story", ["factory"])]
     assert jira == [["Escape names"]]
     lines = tix.backlog_path(tmp_path).read_text().splitlines()
-    assert "- [ ] GEN-100 · base: dev · Escape names" in lines
+    assert "- [ ] PROJ-100 · base: dev · Escape names" in lines
     assert TICKET in lines and "- [!] blocked thing" in lines
-    assert report == ["GEN-100: created from the backlog"]
+    assert report == ["PROJ-100: created from the backlog"]
 
 
 def test_push_with_nothing_to_push_does_not_scan_or_call_jira(tmp_path, jira):
@@ -357,13 +357,13 @@ def test_push_with_nothing_to_push_does_not_scan_or_call_jira(tmp_path, jira):
 
 def test_sync_push_then_pull_does_not_duplicate_the_new_issue(tmp_path, jira):
     write(tmp_path, QUEUED)
-    FakeJira.issues.append({"key": "GEN-7", "summary": "From Jira", "epic": None})
+    FakeJira.issues.append({"key": "PROJ-7", "summary": "From Jira", "epic": None})
     report = tix.sync(tmp_path, JIRA_CFG, [], push=True)
     text = tix.backlog_path(tmp_path).read_text()
-    assert text.count("GEN-100") == 1
-    assert "- [ ] GEN-7 · base: main · From Jira" in text
-    assert report[0] == "GEN-100: created from the backlog"
-    assert "GEN-7: added (base main)" in report
+    assert text.count("PROJ-100") == 1
+    assert "- [ ] PROJ-7 · base: main · From Jira" in text
+    assert report[0] == "PROJ-100: created from the backlog"
+    assert "PROJ-7: added (base main)" in report
 
 
 def test_sync_without_push_never_creates(tmp_path, jira):
@@ -378,8 +378,8 @@ def test_push_leaves_a_line_edited_meanwhile_alone(tmp_path, jira):
     FakeJira.on_create = lambda: path.write_text(path.read_text().replace(QUEUED, "- [ ] edited by hand"))
     report = tix.push_items(tmp_path, JIRA_CFG)
     assert "- [ ] edited by hand" in path.read_text().splitlines()
-    assert "GEN-100" not in path.read_text()
-    assert report == ["GEN-100: created, but the backlog line changed: add the key by hand"]
+    assert "PROJ-100" not in path.read_text()
+    assert report == ["PROJ-100: created, but the backlog line changed: add the key by hand"]
 
 
 def test_one_failed_create_does_not_stop_the_others(tmp_path, jira):
@@ -387,15 +387,15 @@ def test_one_failed_create_does_not_stop_the_others(tmp_path, jira):
     FakeJira.fail = {"one"}
     report = tix.push_items(tmp_path, JIRA_CFG)
     lines = tix.backlog_path(tmp_path).read_text().splitlines()
-    assert "- [ ] one" in lines and "- [ ] GEN-100 · two" in lines
-    assert report[0].startswith("one: not pushed (") and report[1] == "GEN-100: created from the backlog"
+    assert "- [ ] one" in lines and "- [ ] PROJ-100 · two" in lines
+    assert report[0].startswith("one: not pushed (") and report[1] == "PROJ-100: created from the backlog"
 
 
 def test_identical_lines_each_get_their_own_key(tmp_path, jira):
     write(tmp_path, "- [ ] same", "- [ ] same")
     tix.push_items(tmp_path, JIRA_CFG)
     lines = tix.backlog_path(tmp_path).read_text().splitlines()
-    assert "- [ ] GEN-100 · same" in lines and "- [ ] GEN-101 · same" in lines
+    assert "- [ ] PROJ-100 · same" in lines and "- [ ] PROJ-101 · same" in lines
 
 
 @pytest.mark.parametrize("change", [{"mode": "mcp"}, {"project": None}, {"provider": "none"}])
@@ -440,16 +440,16 @@ def test_a_clean_scan_lets_the_push_through(tmp_path, monkeypatch):
     monkeypatch.setattr(tix, "Jira", FakeJira)
     _scanner(tmp_path, 0)
     write(tmp_path, QUEUED)
-    assert tix.push_items(tmp_path, JIRA_CFG) == ["GEN-100: created from the backlog"]
+    assert tix.push_items(tmp_path, JIRA_CFG) == ["PROJ-100: created from the backlog"]
 
 
 def test_jira_create_posts_the_issue_and_returns_its_key(monkeypatch):
     calls = []
     monkeypatch.setattr(tix.Jira, "_request", lambda self, method, path, body=None, query=None:
-                        calls.append((method, path, body)) or {"key": "GEN-9"})
-    assert tix.Jira({"site": "https://x.atlassian.net"}).create("GEN", "Do it", "Task", ["factory"]) == "GEN-9"
-    assert calls == [("POST", "/rest/api/3/issue", {"fields": {"project": {"key": "GEN"}, "summary": "Do it",
+                        calls.append((method, path, body)) or {"key": "PROJ-9"})
+    assert tix.Jira({"site": "https://x.atlassian.net"}).create("PROJ", "Do it", "Task", ["factory"]) == "PROJ-9"
+    assert calls == [("POST", "/rest/api/3/issue", {"fields": {"project": {"key": "PROJ"}, "summary": "Do it",
                                                                "issuetype": {"name": "Task"}, "labels": ["factory"]}})]
     monkeypatch.setattr(tix.Jira, "_request", lambda self, method, path, body=None, query=None: {})
     with pytest.raises(FactoryError, match="no key"):
-        tix.Jira({"site": "https://x.atlassian.net"}).create("GEN", "Do it", "Task", [])
+        tix.Jira({"site": "https://x.atlassian.net"}).create("PROJ", "Do it", "Task", [])

@@ -27,7 +27,7 @@ class PatternTest(unittest.TestCase):
     def test_ignores_placeholders_and_code(self):
         for text in ("password: '<your-password>'", "const token = await getAccessTokenSilently()",
                      "API_KEY=${API_KEY}", "secret = process.env.SECRET", "password: 'xxxxxxxx'",
-                     "VITE_AUTH0_DOMAIN=auth.platform-test.move.ai", "const API_TOKEN = getToken()",
+                     "VITE_AUTH0_DOMAIN=auth.platform-test.example.com", "const API_TOKEN = getToken()",
                      "headers: { Authorization: `Bearer ${token}` }"):
             with self.subTest(text=text):
                 self.assertEqual(policy.find_secrets(text, allow=set()), [])
@@ -64,8 +64,8 @@ class EnvTest(unittest.TestCase):
 class CheckEnvTest(unittest.TestCase):
     def test_check_env_never_prints_values(self):
         with tempfile.TemporaryDirectory() as d:
-            Path(d, ".env").write_text("VITE_E2E_PASSWORD=very-secret-pw\nVITE_AUTH0_DOMAIN=auth.move.ai\n"
-                                       "VITE_BILLING_BASE_URL=https://billing.platform-test.move.ai\n")
+            Path(d, ".env").write_text("VITE_E2E_PASSWORD=very-secret-pw\nVITE_AUTH0_DOMAIN=auth.example.com\n"
+                                       "VITE_BILLING_BASE_URL=https://billing.platform-test.example.com\n")
             run = lambda *a: subprocess.run([sys.executable, str(POLICY), "check-env", *a], capture_output=True,
                                             text=True, env={**os.environ, "CLAUDE_PROJECT_DIR": d})
             r = run("--require", "VITE_E2E_PASSWORD", "--match", "VITE_BILLING_BASE_URL", "--pattern", "platform-test")
@@ -74,7 +74,7 @@ class CheckEnvTest(unittest.TestCase):
             self.assertEqual(r.returncode, 1)
             self.assertIn("VITE_X missing", r.stderr)
             self.assertIn("VITE_AUTH0_DOMAIN does not match", r.stderr)
-            self.assertNotIn("auth.move.ai", r.stdout + r.stderr)
+            self.assertNotIn("auth.example.com", r.stdout + r.stderr)
             self.assertNotIn("very-secret-pw", r.stdout + r.stderr)
 
 

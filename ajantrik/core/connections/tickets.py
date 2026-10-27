@@ -135,10 +135,10 @@ def resolve_epic_base(repo: Path, conn: dict[str, Any], epic: str | None, defaul
 
 # ---- backlog ----------------------------------------------------------------------------------------
 # .factory/backlog.md, under `## Queue`:
-#   - [ ] GEN-781 · base: feature/GEN-750_Projects · Add project rename      (ticket)
+#   - [ ] PROJ-781 · base: feature/PROJ-750_Projects · Add project rename    (ticket)
 #   - [ ] base: main · Escape plant names in tooltips                          (free text)
-#   - [!] GEN-795 · epic GEN-802 has no branch on origin · Actor profile export
-#   - [x] GEN-781 · base: ... · Add project rename → 004-GEN-781-project-rename
+#   - [!] PROJ-795 · epic PROJ-802 has no branch on origin · User profile export
+#   - [x] PROJ-781 · base: ... · Add project rename → 004-PROJ-781-project-rename
 BACKLOG_HEADER = """# Backlog
 
 `factory sync` (or `/factory sync`) adds tickets here; you can also add lines by hand:

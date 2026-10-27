@@ -2,7 +2,7 @@
 
 **Software Factory**
 
-A configurable version of the Move AI software factories (mocap-desktop, accounts-portal, omnigrid).
+A configurable software factory: AI agents that take a ticket from spec to pull request.
 One `factory.yaml` plus markdown agents and skills defines the whole factory:
 
 - the **loop**: agent, approval and gate blocks, the phase (board column) each agent and gate is
@@ -240,10 +240,10 @@ factory projects remove <id>              # forget a project: the repo and its .
 by hand or with `factory sync`:
 
 ```
-- [ ] GEN-781 · base: feature/GEN-750_Projects · Add project rename      (ticket)
+- [ ] PROJ-781 · base: feature/PROJ-750_Projects · Add project rename    (ticket)
 - [ ] base: main · Escape plant names in tooltips                          (free text)
-- [!] GEN-795 · epic GEN-802 has no branch on origin · Actor profile export
-- [x] GEN-781 · base: ... · Add project rename → 004-GEN-781-project-rename
+- [!] PROJ-795 · epic PROJ-802 has no branch on origin · User profile export
+- [x] PROJ-781 · base: ... · Add project rename → 004-PROJ-781-project-rename
 ```
 
 - `- [ ]` is queued: a ticket, or free text as `base: <branch> · <request>`.
