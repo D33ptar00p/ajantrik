@@ -113,7 +113,7 @@ def test_agents_can_preload_claude_code_skills(factory, claude_home):
 def test_discovers_mcp_servers_as_tool_prefixes(tmp_path, claude_home):
     repo = tmp_path / "repo"
     repo.mkdir()
-    (repo / ".mcp.json").write_text(json.dumps({"mcpServers": {"move-api": {"command": "x"}}}))
+    (repo / ".mcp.json").write_text(json.dumps({"mcpServers": {"example-api": {"command": "x"}}}))
     (claude_home / ".claude.json").write_text(json.dumps({
         "mcpServers": {"notes": {"command": "y", "env": {"TOKEN": "secret"}}},
         "projects": {str(repo.resolve()): {"mcpServers": {"figma": {"type": "http"}}},
@@ -129,7 +129,7 @@ def test_discovers_mcp_servers_as_tool_prefixes(tmp_path, claude_home):
 
     found = discover_mcp(repo)
     assert {n: m.source for n, m in found.items()} == {
-        "mcp__move-api": "repo", "mcp__notes": "user", "mcp__figma": "local",
+        "mcp__example-api": "repo", "mcp__notes": "user", "mcp__figma": "local",
         "mcp__plugin_atlassian_atlassian": "plugin", "mcp__plugin_playwright_playwright": "plugin"}
     assert "secret" not in json.dumps([m.to_json() for m in found.values()])
 
