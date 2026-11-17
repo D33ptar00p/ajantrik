@@ -1645,6 +1645,8 @@ function applyEdit(r) {
   if (!r) return
   if (r.agents) S.server.agents = r.agents
   if (r.skills) S.server.skills = r.skills
+  if (r.external_skills) S.server.external_skills = r.external_skills
+  if (r.external_mcp) S.server.external_mcp = r.external_mcp
   if (r.errors) S.server.errors = r.errors
   if (r.warnings) S.server.warnings = r.warnings
   S.issues = { errors: r.errors || [], warnings: r.warnings || [] }
@@ -1653,8 +1655,49 @@ function applyEdit(r) {
 
 function agentEditor(a) {
   const d = clone(a)
-  const skills = (S.server.skills || []).map((s) => s.name)
+  const skills = (S.server.skills || []).map((s) => ({ name: s.name, description: s.description }))
+  const external = S.server.external_skills || []
   const id = (k) => `ag-${k}`
+  d.mcp = d.mcp || []
+  // One checkbox per item, toggling its name in d[key] (skills or mcp).
+  const checks = (key, list) => h('div', { class: 'checks' }, list.map((s) => {
+    const cid = id(`${key}-${s.name}`)
+    return h('span', { class: 'chk', title: s.description || '' }, h('input', { type: 'checkbox', id: cid, checked: d[key].includes(s.name), onchange: (e) => {
+      d[key] = e.target.checked ? [...d[key], s.name] : d[key].filter((x) => x !== s.name)
+    } }), h('label', { for: cid }, s.label || s.name))
+  }))
+  const skillChecks = (list) => checks('skills', list)
+  // Claude Code's own skills, grouped: the repo's .claude, the user's ~/.claude, then one group per plugin.
+  const groups = []
+  for (const s of external) {
+    const label = s.source === 'plugin' ? `Plugin: ${s.origin}` : s.source === 'repo' ? 'Repo (.claude)' : 'User (~/.claude)'
+    let g = groups.find((x) => x.label === label)
+    if (!g) groups.push(g = { label, items: [] })
+    g.items.push(s)
+  }
+  const known = new Set([...skills, ...external].map((s) => s.name))
+  const missing = d.skills.filter((s) => !known.has(s)).map((s) => ({ name: s, description: 'Not found in the factory or in Claude Code' }))
+  // MCP servers Claude Code would start here, grouped like the skills; anything else the agent lists is "Other".
+  const MCP_GROUP = { repo: 'Repo (.mcp.json)', user: 'User (~/.claude.json)', local: 'This repo (~/.claude.json)' }
+  const mcpGroups = []
+  for (const m of S.server.external_mcp || []) {
+    const label = m.source === 'plugin' ? `Plugin: ${m.origin}` : MCP_GROUP[m.source] || m.origin
+    let g = mcpGroups.find((x) => x.label === label)
+    if (!g) mcpGroups.push(g = { label, items: [] })
+    g.items.push({ name: m.name, label: m.server, description: m.name })
+  }
+  const mcpKnown = new Set((S.server.external_mcp || []).map((m) => m.name))
+  const mcpOther = () => d.mcp.filter((m) => !mcpKnown.has(m)).map((m) => ({ name: m, description: 'Not found in this machine\'s Claude Code setup (e.g. a claude.ai connector)' }))
+  const otherBox = h('div', {}, mcpOther().length ? checks('mcp', mcpOther()) : [])
+  const mcpAdd = h('input', { id: id('mcp-add'), type: 'text', class: 'mono', placeholder: 'mcp__claude_ai_Atlassian' })
+  const addMcp = () => {
+    const v = mcpAdd.value.trim()
+    if (!v) return
+    if (!v.startsWith('mcp__')) return toast('MCP tool names start with mcp__', true)
+    if (!d.mcp.includes(v)) d.mcp = [...d.mcp, v]
+    mcpAdd.value = ''
+    otherBox.replaceChildren(checks('mcp', mcpOther()))
+  }
   const modelCustom = d.model && !MODELS.includes(d.model)
   const modelInput = h('input', { id: id('model-custom'), type: 'text', value: modelCustom ? d.model : '', placeholder: 'model id', hidden: !modelCustom, oninput: (e) => { d.model = e.target.value || null } })
   const save = async () => {
@@ -1693,14 +1736,16 @@ function agentEditor(a) {
           } }), h('label', { for: cid }, t))
         }))),
       h('fieldset', { class: 'field wide' }, h('legend', {}, 'Skills (preloaded into the agent)'),
-        skills.length ? h('div', { class: 'checks' }, skills.map((s) => {
-          const cid = id('skill-' + s)
-          return h('span', { class: 'chk' }, h('input', { type: 'checkbox', id: cid, checked: d.skills.includes(s), onchange: (e) => {
-            d.skills = e.target.checked ? [...d.skills, s] : d.skills.filter((x) => x !== s)
-          } }), h('label', { for: cid }, s))
-        })) : h('p', { class: 'help' }, 'No skills yet (Skills tab).')),
-      h('div', { class: 'field wide' }, h('label', { for: id('mcp') }, 'MCP tools (one per line, e.g. mcp__claude_ai_Atlassian)'),
-        h('textarea', { id: id('mcp'), class: 'mono', rows: 2, oninput: (e) => { d.mcp = e.target.value.split('\n').map((x) => x.trim()).filter(Boolean) } }, (d.mcp || []).join('\n')))),
+        skills.length ? skillChecks(skills) : h('p', { class: 'help' }, 'No factory skills yet (Skills tab).'),
+        groups.flatMap((g) => [h('p', { class: 'help' }, g.label), skillChecks(g.items)]),
+        missing.length ? [h('p', { class: 'help' }, 'Not found'), skillChecks(missing)] : [],
+        groups.length ? h('p', { class: 'help' }, 'Claude Code skills are referenced, not copied: they must exist on the machine that runs the job.') : []),
+      h('fieldset', { class: 'field wide' }, h('legend', {}, 'MCP tools (a server gives the agent all its tools)'),
+        mcpGroups.length ? mcpGroups.flatMap((g) => [h('p', { class: 'help' }, g.label), checks('mcp', g.items)])
+          : h('p', { class: 'help' }, 'No MCP servers found in Claude Code (.mcp.json, ~/.claude.json or enabled plugins).'),
+        h('p', { class: 'help' }, 'Other'), otherBox,
+        h('div', { class: 'checks' }, mcpAdd, h('button', { type: 'button', onclick: addMcp }, 'Add'),
+          h('span', { class: 'help' }, 'For servers not found here, such as claude.ai connectors.')))),
     mdEditor(id('body'), 'Instructions', d))
 }
 

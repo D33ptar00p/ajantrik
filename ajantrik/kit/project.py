@@ -15,12 +15,15 @@ import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from pydantic import ValidationError
 
 from ajantrik.kit.schema import FactoryConfig, migrate, warnings
+
+if TYPE_CHECKING:
+    from ajantrik.kit.claude_skills import ExternalSkill
 
 NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 FRONTMATTER = re.compile(r"\A---\n(.*?)\n---\n?(.*)\Z", re.S)
@@ -163,6 +166,7 @@ class Loaded:
     skills: dict[str, SkillDef]
     errors: list[str]
     warnings: list[str]
+    external_skills: dict[str, ExternalSkill] = field(default_factory=dict)  # Claude Code's own (claude_skills.py)
 
     @property
     def ok(self) -> bool:
@@ -229,6 +233,9 @@ class Project:
             skills = self.skills()
         except (ValueError, yaml.YAMLError) as e:
             skills, errors = {}, [*errors, f"skills: {e}"]
+        from ajantrik.kit.claude_skills import discover
+
+        external = discover(self.root, exclude=set(skills))
         cfg = None
         try:
             cfg = FactoryConfig.model_validate(self.raw() if data is None else data)
@@ -238,9 +245,9 @@ class Project:
             errors.append(str(e))
         warns: list[str] = []
         if cfg:
-            errors += cross_check(cfg, agents, skills)
+            errors += cross_check(cfg, agents, skills, external)
             warns = warnings(cfg)
-        return Loaded(cfg, agents, skills, errors, warns)
+        return Loaded(cfg, agents, skills, errors, warns, external)
 
     # ---- writing ----------------------------------------------------------------------------------
     def _backup(self, path: Path) -> None:
@@ -341,13 +348,14 @@ def generic_agent(name: str) -> str:
     return name
 
 
-def cross_check(cfg: FactoryConfig, agents: dict[str, AgentDef], skills: dict[str, SkillDef]) -> list[str]:
+def cross_check(cfg: FactoryConfig, agents: dict[str, AgentDef], skills: dict[str, SkillDef],
+                external: dict[str, ExternalSkill] | None = None) -> list[str]:
     errs = []
     for name in sorted(cfg.agent_names() - set(agents)):
         errs.append(f"unknown agent {name!r}: add .factory/config/agents/{name}.md")
     for a in agents.values():
         for s in a.skills:
-            if s not in skills:
+            if s not in skills and s not in (external or {}):
                 errs.append(f"agent {a.name}: unknown skill {s!r}")
         unknown = [t for t in a.tools if t not in KNOWN_TOOLS and not t.startswith("mcp__")]
         if unknown:
