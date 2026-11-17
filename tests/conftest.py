@@ -74,6 +74,14 @@ def isolated_home(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.
     return home
 
 
+@pytest.fixture(autouse=True)
+def claude_home(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Tests never see the real ~/.claude skills and plugins."""
+    home = tmp_path_factory.mktemp("claude-home")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home))
+    return home
+
+
 FAKE_SRT = """#!/usr/bin/env python3
 import json, os, sys
 args = sys.argv[1:]

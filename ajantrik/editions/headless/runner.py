@@ -24,6 +24,7 @@ from ajantrik.core.util import FactoryError, read_json, write_json
 from ajantrik.editions.headless.backends.base import AgentResult, AgentRun, Backend
 from ajantrik.editions.headless.backends.cli_agents import ClaudeCliBackend, CodexCliBackend
 from ajantrik.editions.headless.backends.llm_api import LlmApiBackend
+from ajantrik.kit.claude_skills import ExternalSkill
 from ajantrik.kit.project import AgentDef, Project, SkillDef
 from ajantrik.kit.render import resolve_model
 from ajantrik.kit.schema import FactoryConfig
@@ -52,7 +53,8 @@ def build_backend(cfg: FactoryConfig) -> Backend:
                        "claude-cli, codex-cli or api to run headless")
 
 
-def system_prompt(cfg: FactoryConfig, agent: AgentDef, skills: dict[str, SkillDef]) -> str:
+def system_prompt(cfg: FactoryConfig, agent: AgentDef, skills: dict[str, SkillDef],
+                  external: dict[str, ExternalSkill] | None = None) -> str:
     parts = [FRAMING.format(agent=agent.name, repo=cfg.repo.name, tools=", ".join(agent.tools),
                             sandbox=SANDBOX_NOTE if cfg.sandbox.enabled else ""),
              "Read these repo files first when they exist: " + ", ".join(cfg.repo.context_files) + ".",
@@ -61,6 +63,13 @@ def system_prompt(cfg: FactoryConfig, agent: AgentDef, skills: dict[str, SkillDe
         s = skills.get(name)
         if s:
             parts += ["", f"## Skill: {s.name}", s.description, "", s.body.strip()]
+        elif name in (external or {}):
+            # A Claude Code skill (repo, user or plugin): read now, so edits to it apply to the next run.
+            x = (external or {})[name]
+            try:
+                parts += ["", f"## Skill: {x.name}", x.description, "", x.body()]
+            except OSError:
+                continue
     return "\n".join(parts)
 
 
@@ -74,6 +83,7 @@ class Runner:
         self.cfg = loaded.cfg
         self.agents = loaded.agents
         self.skills = loaded.skills
+        self.external_skills = loaded.external_skills
         self.engine = Engine(project.root)
         self.backend = backend or build_backend(self.cfg)
         self.say = say
@@ -105,7 +115,7 @@ class Runner:
         jd = jobs.job_dir(self.project.root, job["id"])
         logs = jd / "agents"
         logs.mkdir(parents=True, exist_ok=True)
-        run = AgentRun(name=spec["name"], agent=agent.name, system=system_prompt(self.cfg, agent, self.skills),
+        run = AgentRun(name=spec["name"], agent=agent.name, system=system_prompt(self.cfg, agent, self.skills, self.external_skills),
                        prompt=prompt, model=resolve_model(self.cfg, agent), tools=agent.tools, root=self.project.root,
                        worktree=Path(job["worktree"]), job_dir=jd, session_id=session,
                        log_path=logs / f"{spec['name']}.r{job['round']}.jsonl")

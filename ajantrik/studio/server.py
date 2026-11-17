@@ -35,6 +35,7 @@ from ajantrik.core.connections import tickets as tix
 from ajantrik.core.graph import DELIVER
 from ajantrik.core.util import FactoryError, read_json
 from ajantrik.kit import workspace
+from ajantrik.kit.claude_skills import discover_mcp
 from ajantrik.kit.project import AgentDef, Project, SkillDef, guardrail_library, library_dir, list_presets
 from ajantrik.kit.schema import BUILTIN_GUARDRAILS, FactoryConfig
 from ajantrik.kit.workspace import Registry
@@ -129,6 +130,8 @@ class Studio:
             "schema": FactoryConfig.model_json_schema(),
             "agents": [a.to_json() for a in (loaded.agents.values() if loaded else [])],
             "skills": [s.to_json() for s in (loaded.skills.values() if loaded else [])],
+            "external_skills": [s.to_json() for s in (loaded.external_skills.values() if loaded else [])],
+            "external_mcp": [m.to_json() for m in discover_mcp(self.root).values()],
             "errors": load_errors + (loaded.errors if loaded else ["no .factory/config/factory.yaml"]),
             "warnings": loaded.warnings if loaded else [],
             "presets": list_presets(),
@@ -255,7 +258,9 @@ class Studio:
         loaded = self.project.load()
         out: dict[str, Any] = {"ok": True, "errors": loaded.errors, "warnings": loaded.warnings,
                                "agents": [a.to_json() for a in loaded.agents.values()],
-                               "skills": [s.to_json() for s in loaded.skills.values()]}
+                               "skills": [s.to_json() for s in loaded.skills.values()],
+                               "external_skills": [s.to_json() for s in loaded.external_skills.values()],
+                               "external_mcp": [m.to_json() for m in discover_mcp(self.root).values()]}
         if self._is_saved(loaded):
             out["render"] = self.render()
         return out
