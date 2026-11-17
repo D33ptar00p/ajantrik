@@ -1,320 +1,141 @@
-# Ajantrik
+<p align="center">
+  <img src="assets/brand/logo.svg" alt="Ajantrik logo" width="120">
+</p>
 
-**Software Factory**
+<p align="center">
+  <img src="assets/brand/banner.svg" alt="Ajantrik" width="560">
+</p>
 
-A configurable software factory: AI agents that take a ticket from spec to pull request.
-One `factory.yaml` plus markdown agents and skills defines the whole factory:
+<h1 align="center">Ajantrik</h1>
 
-- the **loop**: agent, approval and gate blocks, the phase (board column) each agent and gate is
-  in, rounds and where failures go back to
-- **agents and skills**: edit, add, clone them from the library. Every worker in the loop is an
-  agent, and the agent says what it does (writes a file, builds, reviews, integrates)
-- **guardrails**: deterministic checks (secret and PII scans, topic/word and regex rules, your
-  tests and linters); a gate block can sit in any phase and run any of them
-- **connections**: the git host (GitHub, GitLab, Bitbucket) and Jira
-- **delivery**: what happens to a finished branch (nothing, push, PR, or straight onto the base),
-  with or without a human approval first
-- the **runtime** that runs the agents: interactive Claude Code, the Claude Code CLI, the Codex
-  CLI, or any LLM API (Anthropic, OpenAI, Bedrock, a local Ollama, a LiteLLM proxy)
-- the **sandbox** the work runs in: Anthropic's [sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime)
-  around agents' commands, dependency installs, test runs and the gate, on by default
+<h3 align="center">A configurable software factory.</h3>
 
-You edit all of it in a local web **studio** or by hand.
+<p align="center">
+  AI agents that take a ticket from spec to pull request. One <code>factory.yaml</code> plus markdown
+  agents and skills defines the whole loop, run through Claude Code, Codex or any LLM API.
+</p>
+
+<p align="center">
+  <a href="https://github.com/D33ptar00p/ajantrik/actions/workflows/ci.yml"><img src="https://github.com/D33ptar00p/ajantrik/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <img src="assets/brand/badges/python.svg" alt="Python: 3.11+">
+  <img src="assets/brand/badges/runtimes.svg" alt="runtimes: Claude Code, Codex, LLM API">
+  <img src="assets/brand/badges/sandbox.svg" alt="sandbox: on by default">
+  <img src="assets/brand/badges/license.svg" alt="license: MIT">
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick start</a> ◆
+  <a href="#requirements">Requirements</a> ◆
+  <a href="#features">Features</a> ◆
+  <a href="#documentation">Documentation</a> ◆
+  <a href="#development">Development</a> ◆
+  <a href="#contact">Contact</a>
+</p>
 
 ```
 Plan:       spec-writer → architect → ⏸ approve
-Build:      test-author → builder-main (more builders: a fan-out, they run in parallel)
-Guardrails: gate (secret scan, clean tree and the guardrails it picks)
-Review:     ⇉ reviewer-code ∥ reviewer-security ∥ … (the gate fans out to the reviewers)
+Build:      test-author → builder-main (more builders run in parallel)
+Guardrails: gate (secret scan, clean tree, your checks)
+Review:     reviewer-code ∥ reviewer-security ∥ …
 Integrate:  integrator → deliver (none | push | pr | direct, optionally after ⏸ approval)
 gate fail / review CHANGES → back to the builders, max N rounds, then needs-human
 ```
 
-Every block in that loop can be changed, moved to another phase or removed, a phase can hold as
-many agents as you like, and you can add phases. The board shows the phases in order, then Done, then
-Needs human, where every approval and anything that needs a person waits.
-
 ## Quick start
 
+Requires Python 3.11+, [uv](https://docs.astral.sh/uv/) and git (see [Requirements](#requirements)).
+
 ```bash
-uv tool install ".[api]"            # or: uv sync --extra api && uv run factory ...
+git clone https://github.com/D33ptar00p/ajantrik.git && cd ajantrik
+uv tool install ".[api]"      # installs the `factory` command
+
 cd /path/to/your/repo
-factory presets                     # default
-factory init                        # writes .factory/config/ and renders .claude/ + .factory/
-factory studio                      # edit loop, agents, skills, guardrails, connections, delivery, runtime
-factory doctor                      # config, render drift, git, tickets and runtime checks
+factory init                  # writes .factory/config/ and renders .claude/ + .factory/
+factory studio                # web studio on 127.0.0.1: loop, agents, guardrails, runtime…
+factory doctor                # check config, git, tickets, runtime and sandbox
 ```
-
-### Starting the studio
-
-```bash
-factory studio                      # or, from a clone: .venv/bin/factory studio / uv run factory studio
-factory studio --port 8765          # pick the port
-factory studio --no-browser         # don't open a browser; open the printed URL yourself
-```
-
-The studio listens on 127.0.0.1 only. Each start mints a new token, carried by the URL it prints
-(Ctrl+C stops it). Run inside a project repo, it opens that repo's factory. Run anywhere else, or
-with `--all`, it opens the Projects page, listing every registered project (see [Projects](#projects)).
-For the jobs board alone, without the editor, run `.factory/ui.sh`.
-
-A project's tabs are Board, Backlog, Loop, Agents, Skills, Guardrails, Connections, Delivery,
-Runtime, Sandbox and Raw YAML. What the Board's actions do depends on the runtime. With a headless runtime
-(`claude-cli`, `codex-cli`, `api`) the Board can approve, continue and deliver jobs. With
-`claude-code` it copies the `/factory go|deliver|rework` command for you to run, because the
-interactive session is the orchestrator.
 
 Then run a job:
 
-| Runtime (`runtime.kind`) | How you run it |
+| Runtime | Run it |
 |---|---|
-| `claude-code` | In Claude Code in the repo: `/factory "Add rename to projects"`, then `/factory go <job>` |
-| `claude-cli` | `factory run "Add rename to projects"`, then `factory go <job>` at each approval |
-| `codex-cli` | same as above, through `codex exec` |
-| `api` | same as above, through LiteLLM: `provider: anthropic \| openai \| bedrock \| ollama \| litellm \| openai-compatible` |
+| `claude-code` | In Claude Code: `/factory "Add rename to projects"`, then `/factory go <job>` |
+| `claude-cli`, `codex-cli`, `api` | `factory run "Add rename to projects"`, then `factory go <job>` at each approval |
 
 Jobs started in one runtime can be finished in another: they share `.factory/jobs/<id>/`.
-The dashboard (`.factory/ui.sh`, or the studio's Board tab) shows every job's stage, gate and
-review results.
 
-### Commands
+## Requirements
 
-```bash
-factory init [--preset NAME] [--name REPO] [--force]   # create .factory/config/ from a preset, then render
-factory presets                                        # list presets
-factory validate                                       # check the config (errors and warnings)
-factory render [--check]                               # write .claude/ and .factory/ from the config
-factory studio [--port N] [--no-browser] [--all]       # the web studio
-factory projects                                       # list projects
-factory projects add <path> [--runtime R] [--preset P] [--name N]   # register a repo, setting up its factory
-factory projects remove <id>                           # forget a project (its files stay)
-factory doctor [--only git|tickets|runtime|sandbox]    # check connections, the runtime and the sandbox
-factory run "<request>" [--ticket K] [--base B] [--wait]   # headless: create a job and drive it
-factory go <job> [--wait]                              # headless: approve the waiting stage and continue
-factory resume <job> [--wait]                          # headless: continue a job
-factory next [--wait] [--create-only] [--items 0,2]    # claim backlog items and run them (see Backlog)
-factory new|step|advance|refresh|gate|approve|rework|deliver|abandon|status|sync|route|ticket
-```
-
-The last line is the job commands: they are the same as `python3 .factory/factory.py <cmd>`
-(`python3 .factory/factory.py --help` lists them). `--json` anywhere on the line prints
-machine-readable output, which the studio relies on. `--root <path>` points at a repo other than
-the current one. `--wait` waits at approvals instead of stopping.
-
-## Layout: one config, several editions
-
-```
-ajantrik/
-  kit/            the installed `factory` CLI: schema (factory.yaml), project files, render, doctor, projects
-    templates/    the /factory orchestrator skill, dashboard, ui.sh
-    workspace.py  the projects registry ($AJANTRIK_HOME/projects.json)
-  core/           the runtime-neutral engine, stdlib only; copied into each repo as .factory/lib/ajantrik_core
-    engine.py     the loop as data: step / advance / gate / approve / rework / deliver
-    graph.py      the loop as a graph: next, fan-out groups, loop.start, and what an agent does (role)
-    gate.py routing.py delivery.py jobs.py
-    connections/  git_host (gh, glab, Bitbucket REST), tickets (Jira REST, backlog), secrets (env:/keyring:)
-    security/     guard.py (hooks + library), policy.py, secret_scan.sh: lifted from the Move factories;
-                  pii_scan.py, content_scan.py: the PII and topic/regex guardrails
-  editions/
-    claude_code/  edition 1: interactive Claude Code; render writes .claude/agents, skills, settings, /factory
-    headless/     edition 2: `factory run` drives the loop through a backend
-      backends/   cli_agents.py (claude -p, codex exec), llm_api.py (LiteLLM tool loop), tools.py (guarded tools)
-  studio/         local web UI + API (127.0.0.1, token, no build step)
-library/          generic agents and skills, the starting point for new ones
-presets/          default: the generic factory this repo runs on itself (7 agents, 5 skills)
-```
-
-In a configured repo:
-
-```
-.factory/config/factory.yaml           source of truth (studio edits it; history in config/.history/)
-.factory/config/agents/*.md            agents: frontmatter (tools, model, skills) + instructions
-.factory/config/skills/<name>/SKILL.md skills
-.factory/factory.json                  rendered, with every default: read by hooks, gate, engine, dashboard
-.factory/factory.py                    the job commands, stdlib only: python3 .factory/factory.py --help
-.claude/agents, .claude/skills, .claude/settings.json   rendered for Claude Code
-.factory/jobs/<id>/                    job state (gitignored); worktrees in ../<repo>-factory/<id>/
-```
-
-Only `.factory/config/` (and `.factory/harness/`, `.factory/security/allow.txt`, `.factory/backlog.md`)
-is yours to edit. Everything else is regenerated by `factory render`, which also reports files that
-were edited by hand and removes files for agents you deleted.
-
-## How the loop works
-
-The engine (`ajantrik/core/engine.py`) reads the stages as a graph (`ajantrik/core/graph.py`) and
-answers one question: *what next?*
-
-- `step <job>` returns one action: run these agents (in parallel or not, fresh or resumed), run the
-  gate, wait for an approval, deliver, or stop.
-- After the agents of a stage finish, `advance <job>` checks what they wrote, using the same
-  marker lines as the hand-built factories (`STATUS: READY|BLOCKED`, `VERDICT: PASS|CHANGES`,
-  `READY|ESCALATE`, `Builders:`). Then it moves the job on, back a round, or to needs-human.
-
-The interactive `/factory` skill and the headless runner both drive this same API, so the loop is
-configuration rather than prose. A loop has three kinds of block:
-
-| kind | does |
+| | |
 |---|---|
-| `agent` | runs one agent; its `role` says what it writes (below) |
-| `approval` | the job waits at `awaiting-<id>` until a human approves (on the board: Needs human) |
-| `gate` | the guardrails it names (`steps`: `gate.steps` keys and the built-in `secrets` and `clean-tree`; empty = all) |
+| Python | 3.11, 3.12 or 3.13, with [uv](https://docs.astral.sh/uv/) |
+| Repository | a git repository to run the factory in; worktrees go in `../<repo>-factory/<id>/` |
+| Runtime | one of: [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude-code`, `claude-cli`), the Codex CLI (`codex-cli`), or an LLM API key for `api` (Anthropic, OpenAI, Bedrock, Ollama, LiteLLM) |
+| Sandbox | [sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime): `npm i -g @anthropic-ai/sandbox-runtime`, plus `bubblewrap socat ripgrep` on Linux or `ripgrep` on macOS |
+| Connections (optional) | `gh`, `glab` or Bitbucket credentials for delivery, and Jira for tickets, always given as `env:NAME` or `keyring:service/name` references |
 
-| agent role | writes | and then |
-|---|---|---|
-| `plain` | its `output` file (spec, design, tests, or anything you add) | `BLOCKED` on the first line stops the job |
-| `builder` | code commits and `build-<id>.md` | the ones the design picked (`Builders:` line) run; later rounds resume them with the findings |
-| `reviewer` | `round-<N>/review-<id>.md` with `VERDICT: PASS\|CHANGES` | runs always, or only when its path globs, diff patterns or gate metrics match |
-| `integrator` | `decision.md` and the PR text (one at most) | refuse-path check before it, outgoing secret scan after it |
+## Features
 
-The role comes from the agent: `builder-*` agents build, `reviewer-*` agents review, `integrator`
-integrates and every other agent writes a file. A block's `role` overrides that.
+- **Configurable loop:** agent, approval and gate blocks on a graph. Move, add or remove any block,
+  add phases, and fan out to run agents in parallel.
+- **Agents and skills as markdown:** edit them, clone them from the library, or write your own.
+- **Guardrails:**
+  - secret scan and clean-tree check, built in;
+  - PII, topic and regex scans, large files, conflict markers, dependency audit;
+  - your own tests and linters as gate steps.
+- **Any runtime:** interactive Claude Code, the Claude Code CLI, the Codex CLI, or any LLM API through LiteLLM.
+- **Delivery:** nothing, push, pull request, or straight onto the base, with or without a human approval first.
+  Works with GitHub, GitLab, Bitbucket and Jira.
+- **Web studio:** board, backlog and an editor for the whole factory, for one repo or many.
+- **Safe by default:**
+  - agents never push, merge, approve or deliver; only delivery writes to a remote;
+  - commands, installs and tests run in the OS sandbox, which fails closed;
+  - credentials are references, never literal values, and are stripped from agent environments;
+  - the studio listens on 127.0.0.1 with a fresh token per start.
 
-Phases (`loop.phases`) are only board columns, in order: Plan, Build, Guardrails, Review and
-Integrate by default, and you can add your own. An agent block goes in any phase without changing
-what it does; a gate goes in Guardrails (else Review) unless you put it elsewhere; approvals have no
-phase. What runs in parallel comes
-from the arrows: a block whose success edge fans out (`next: [a, b]`, or a second arrow drawn in the
-studio) starts `a` and `b` at the same time as one step. Each branch is a single agent, and all
-branches must lead on to the same block (or the same fan-out), where the path joins again. Without a
-fan-out, blocks run one after the other. Delivery
-shows in the studio as a single Deliver block that always runs after the last block; it is the same
-`delivery` settings as the Deliver tab: after the last block the job is delivered by `delivery.mode`
-(`none`, `push`, `pr` or `direct` with `ff-only` or `squash`), optionally after an approval.
+  See [docs/security.md](docs/security.md) and [SECURITY.md](SECURITY.md).
 
-The blocks form a graph:
+## Documentation
 
-- Each block has an optional `next`: a block id, `end` (the job is ready), or a list of ids (a
-  fan-out, above).
-- Without `next` a block continues to the one after it in the list, so a plain ordered list works
-  as it always did.
-- `loop.start` is the first block; it defaults to the first in the list.
-- The run order is the path of `next` edges from `loop.start`. Blocks off that path never run.
-- Gates and reviewer agents also have an `on_fail` edge. It must point to an earlier block and
-  defaults to the nearest builder before it (below).
-
-### Guardrails
-
-A guardrail is a bash command run in the job's worktree (`gate.steps`); it fails the gate with a
-non-zero exit. The studio's Guardrails tab shows the command each one runs. Two are built in: the
-secret scan (`gate.secrets`: every commit on the branch, plus gitleaks when installed) and the
-clean-tree check (`gate.clean_tree`). The library (`library/guardrails.yaml`, "+ From library") adds:
-
-| guardrail | checks the lines the branch adds for |
+| | |
 |---|---|
-| `pii` | email addresses, phone numbers, US SSNs, payment cards (Luhn) and IBANs (checksum); placeholders such as example.com are ignored |
-| `topics` | named lists of words or phrases (`TOPICS: "codenames: project falcon; banned: …"`), case-insensitive |
-| `regex` | your own patterns (`PATTERNS`, one per line), optionally only in `PATHS` |
-| `large-files` | added or grown files over `LIMIT_KB` |
-| `conflict-markers` | unresolved merge conflict markers |
-| `dependency-audit` | known vulnerabilities, with pip-audit or npm audit when a dependency file changes |
-| `debug-leftovers` | `breakpoint()`, `pdb.set_trace()`, `console.log()`, `debugger` (report only by default) |
+| [Getting started](docs/getting-started.md) | Install, initialise, the studio, your first job |
+| [CLI reference](docs/cli.md) | Every `factory` command |
+| [How the loop works](docs/loop.md) | Blocks, roles, phases, fan-out, rounds |
+| [Guardrails](docs/guardrails.md) | The gate and the guardrail library |
+| [Projects and backlog](docs/projects-and-backlog.md) | Several repos and the `factory next` queue |
+| [Security model](docs/security.md) | The guard, credentials and the sandbox |
+| [Architecture](docs/architecture.md) | Source layout and generated files |
 
-The PII, topic and regex scans write findings as file, line, rule and fingerprint, never the matched
-text. To accept a reviewed false positive, add its fingerprint to `.factory/security/allow.txt`.
+## Troubleshooting
 
-A failing gate or a reviewer's `CHANGES` sends the job back to its `on_fail` (the default loop sets
-it to the builder), or to the nearest builder before it; with no builder before it, the job goes to a human. Only the builders that own
-the findings rebuild, when that is known (a reviewer's or guardrail's `builder`). A round opens at
-the first gate or reviewer after a build; checks before any builder run in round 0. Once
-`max_rounds` is used up, the job goes to needs-human.
-
-Configs written before phases (`version: 1`, with `builders:` and `reviewers:` teams) still load:
-each builder becomes a build agent and each reviewer a review agent, failures go back to the first
-builder explicitly, and the next save writes version 2.
-
-## Projects
-
-A project is one git repository with its own factory. The registry only remembers where they are:
-`$AJANTRIK_HOME/projects.json` (default `~/.ajantrik`).
-
-```bash
-factory projects                          # list the registered repos
-factory projects add ~/code/my-repo       # register a repo; if it has no factory, sets one up from --preset and --runtime
-factory projects remove <id>              # forget a project: the repo and its .factory/ stay as they are
-```
-
-`factory studio` run outside a configured repo, or with `--all`, opens the Projects page.
-
-## Backlog
-
-`.factory/backlog.md` is the queue of work for `factory next`. Items go under `## Queue`; add them
-by hand or with `factory sync`:
-
-```
-- [ ] PROJ-781 · base: feature/PROJ-750_Projects · Add project rename    (ticket)
-- [ ] base: main · Escape plant names in tooltips                          (free text)
-- [!] PROJ-795 · epic PROJ-802 has no branch on origin · User profile export
-- [x] PROJ-781 · base: ... · Add project rename → 004-PROJ-781-project-rename
-```
-
-- `- [ ]` is queued: a ticket, or free text as `base: <branch> · <request>`.
-- `- [x]` is done, with `→ <job id>`.
-- `- [!]` is blocked until a human resolves it.
-- `factory sync` fills the file from the ticket system. `factory sync --push` first creates issues
-  for queued lines that have no ticket. It writes to the ticket system, so it is a human's command.
-- `factory next` claims the first `- [ ]` item and runs it headless. `--create-only` only creates
-  the job. `--items 0,2` picks items by their 0-based position instead.
-- The studio's Backlog tab shows the same file. When the runtime is headless, ticked queued items
-  can be started as one job there (they must share one ticket and one base branch).
-
-## Security
-
-The guard from the hand-built factories is kept and extended:
-
-- It runs as Claude Code hooks for `claude-code` and `claude-cli`.
-- It also runs as a library before every tool call in the `api` runtime. There, the Read, Grep,
-  Glob, Edit, Write and Bash tools are the factory's own and go through the same rules.
-- Agents can never push, merge, write to GitHub or Jira, approve a job or deliver one.
-- Approvals are files only `factory approve` writes, and agents cannot write them. The interactive
-  orchestrator can approve only right after you typed `/factory go|deliver <job>`.
-- Delivery is the only code that writes to a remote. It runs after the outgoing secret scan and,
-  when configured, after your approval.
-- Credentials are always references (`env:NAME`, `keyring:service/name`), and the schema rejects
-  literal values.
-- Agent subprocesses get an environment with credentials stripped.
-- `codex-cli` has no tool hooks: the whole `codex exec` process runs in the sandbox (below) and inside
-  it the Codex sandbox (`workspace-write`, worktree and job folder, no network), and `factory validate`
-  says so.
-
-### Sandbox
-
-The guard is rules; the sandbox is the operating system. With `sandbox.enabled` (the default), feature
-development and testing happen inside Anthropic's sandbox-runtime (`srt`: bubblewrap on Linux, Seatbelt
-on macOS, alpha on Windows):
-
-| What | How |
+| Symptom | Fix |
 |---|---|
-| agents' commands, `claude-code` / `claude-cli` | render writes the `sandbox` block of `.claude/settings.json`; Claude Code runs Bash in it. `python3 .factory/factory.py *` is excluded: it sandboxes setup and the gate itself, and delivery needs the git host |
-| agents' commands, `api` | the Bash tool runs `srt --settings … bash -c <cmd>` |
-| agents' file edits | Read, Edit and Write follow the same `deny_read` / `deny_write` rules (Claude Code: rendered permission rules; `api`: the factory's own tools) |
-| worktree setup and every gate step (`sandbox.apply.gate`) | `srt` around each `bash -c` |
-| `codex-cli` (`sandbox.apply.codex`) | `srt` around the whole `codex exec`, with the OpenAI hosts allowed. On macOS Seatbelt cannot nest, so there srt is the boundary and Codex runs with `danger-full-access` |
-
-A job's commands write only its own worktree, its job folder, the temp dir and `filesystem.allow_write`,
-and reach only `network.allowed_domains` (by default the PyPI and npm registries). Every srt option is in
-`factory.yaml` under `sandbox:` and in the studio's Sandbox tab. Each run's srt settings go to
-`.factory/.sandbox/`, where no sandboxed command can write.
-
-The sandbox **fails closed**: when it cannot start, agents and the gate refuse to run and the job goes
-to needs-human (`fail_if_unavailable: false` runs unsandboxed with a warning instead). Install it and
-check with `factory doctor --only sandbox`:
-
-```bash
-npm i -g @anthropic-ai/sandbox-runtime
-sudo apt install bubblewrap socat ripgrep      # Linux; macOS: brew install ripgrep
-```
-
-On Ubuntu 24.04+ bubblewrap may also need `kernel.apparmor_restrict_unprivileged_userns=0` or an
-AppArmor profile. Configs written before the sandbox existed get it on, with these defaults.
+| Agents or the gate refuse to run; the job goes to needs-human | The sandbox could not start. Run `factory doctor --only sandbox` and install what it reports. |
+| Sandbox fails on Ubuntu 24.04+ | bubblewrap may need `kernel.apparmor_restrict_unprivileged_userns=0` or an AppArmor profile. |
+| The Board only copies a `/factory …` command | Expected with `claude-code`: the interactive session drives the loop. Paste the command into Claude Code. |
+| `factory render` reports hand-edited files | Only `.factory/config/` is yours to edit; move the change there and render again. |
+| A guardrail flags a false positive | Add its fingerprint to `.factory/security/allow.txt`. |
 
 ## Development
 
 ```bash
 uv sync --extra api
-uv run pytest            # unit, end-to-end loop (scripted backend), backends (fake CLIs), the default preset
+uv run pre-commit install
+uv run pytest                          # unit, end-to-end loop, backends, the default preset
 uv run ruff check ajantrik tests && uv run mypy
 ```
 
-The preset tests materialise `presets/default` into a temp repo, render it, and check its agents,
-skills and loop match this repo's own `.factory/config/` (copy changes there into the preset too).
+The CLI, schema and render live in `ajantrik/kit/`, the runtime-neutral engine (stdlib only) in
+`ajantrik/core/`, the runtimes in `ajantrik/editions/`, and the studio (no build step) in
+`ajantrik/studio/`. See [docs/architecture.md](docs/architecture.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Contact
+
+- Bugs and questions: [GitHub Issues](https://github.com/D33ptar00p/ajantrik/issues)
+- Contributing: see [CONTRIBUTING.md](CONTRIBUTING.md)
+- Security: see [SECURITY.md](SECURITY.md); don't open public issues
+
+## License
+
+[MIT](LICENSE). Copyright 2026 D33ptar00p.

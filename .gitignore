@@ -9,3 +9,6 @@ dist/
 
 # software factory runtime state
 .factory/
+
+# rendered by `factory render`; contains machine-specific absolute paths
+.claude/settings.json
